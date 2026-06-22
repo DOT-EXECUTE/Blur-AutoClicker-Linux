@@ -65,7 +65,29 @@ jobs:
         run: cargo install tauri-cli --version "^2" --locked
 
       - name: Build Linux packages
-        run: ./scripts/build-packages.sh
+        id: build-packages
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          ./scripts/build-packages.sh 2>&1 | tee /tmp/build-packages.log
+
+      - name: Post build error as commit comment
+        if: steps.build-packages.outcome == 'failure'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = `### CI build packages failure\n\n\`\`\`\n${fs.readFileSync('/tmp/build-packages.log', 'utf8').slice(-6000)}\n\`\`\``;
+            await github.rest.repos.createCommitComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              commit_sha: context.sha,
+              body,
+            });
+
+      - name: Fail if build failed
+        if: steps.build-packages.outcome == 'failure'
+        run: exit 1
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
