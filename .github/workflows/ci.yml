@@ -7,7 +7,7 @@ on:
     branches: [linux]
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -67,9 +67,53 @@ jobs:
         run: cargo fmt --check
 
       - name: Check
+        id: cargo-check
         working-directory: src-tauri
-        run: cargo check --target x86_64-unknown-linux-gnu --locked
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          cargo check --target x86_64-unknown-linux-gnu --locked 2>&1 | tee /tmp/cargo-check.log
+
+      - name: Post Check error as commit comment
+        if: steps.cargo-check.outcome == 'failure'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = `### CI cargo check failure\n\n\`\`\`\n${fs.readFileSync('/tmp/cargo-check.log', 'utf8').slice(-6000)}\n\`\`\``;
+            await github.rest.repos.createCommitComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              commit_sha: context.sha,
+              body,
+            });
+
+      - name: Fail if Check failed
+        if: steps.cargo-check.outcome == 'failure'
+        run: exit 1
 
       - name: Test
+        id: cargo-test
         working-directory: src-tauri
-        run: cargo test --target x86_64-unknown-linux-gnu --locked
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          cargo test --target x86_64-unknown-linux-gnu --locked 2>&1 | tee /tmp/cargo-test.log
+
+      - name: Post Test error as commit comment
+        if: steps.cargo-test.outcome == 'failure'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = `### CI cargo test failure\n\n\`\`\`\n${fs.readFileSync('/tmp/cargo-test.log', 'utf8').slice(-6000)}\n\`\`\``;
+            await github.rest.repos.createCommitComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              commit_sha: context.sha,
+              body,
+            });
+
+      - name: Fail if Test failed
+        if: steps.cargo-test.outcome == 'failure'
+        run: exit 1
