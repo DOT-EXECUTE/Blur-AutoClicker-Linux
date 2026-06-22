@@ -45,10 +45,16 @@ mod vk_compat {
     pub const VK_UP: i32 = 0x26;
     pub const VK_RIGHT: i32 = 0x27;
     pub const VK_DOWN: i32 = 0x28;
+    pub const VK_SNAPSHOT: i32 = 0x2C;
     pub const VK_INSERT: i32 = 0x2D;
     pub const VK_DELETE: i32 = 0x2E;
+    pub const VK_APPS: i32 = 0x5D;
     pub const VK_LWIN: i32 = 0x5B;
     pub const VK_RWIN: i32 = 0x5C;
+    pub const VK_CAPITAL: i32 = 0x14;
+    pub const VK_NUMLOCK: i32 = 0x90;
+    pub const VK_SCROLL: i32 = 0x91;
+    pub const VK_PAUSE: i32 = 0x13;
     pub const VK_NUMPAD0: i32 = 0x60;
     pub const VK_NUMPAD1: i32 = 0x61;
     pub const VK_NUMPAD2: i32 = 0x62;

@@ -345,7 +345,7 @@ fn token_is_alphabetic(token: &str) -> bool {
 }
 
 #[cfg(target_os = "linux")]
-fn send_key_down(key: Key, use_shift: bool) {
+fn send_key_down(key: evdev::Key, use_shift: bool) {
     if use_shift {
         linux::shift_down();
     }
@@ -353,7 +353,7 @@ fn send_key_down(key: Key, use_shift: bool) {
 }
 
 #[cfg(target_os = "linux")]
-fn send_key_up(key: Key, use_shift: bool) {
+fn send_key_up(key: evdev::Key, use_shift: bool) {
     linux::emit_key(key, 0);
     if use_shift {
         linux::shift_up();
