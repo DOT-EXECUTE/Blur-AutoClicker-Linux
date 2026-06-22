@@ -9,9 +9,12 @@ use tauri::{AppHandle, Emitter, Manager};
 
 static LAST_ZONE_SHOW: Mutex<Option<Instant>> = Mutex::new(None);
 static SEQUENCE_PICK_OVERLAY_ACTIVE: AtomicBool = AtomicBool::new(false);
-static CUSTOM_STOP_ZONE_PICK_OVERLAY_ACTIVE: AtomicBool = AtomicBool::new(false);
 pub static OVERLAY_THREAD_RUNNING: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(true);
+
+#[cfg(target_os = "linux")]
+static OVERLAY_CLICK_THROUGH_SET: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -29,18 +32,18 @@ pub fn init_overlay(app: &AppHandle) -> Result<(), String> {
 
     log::info!("[Overlay] Running one-time init...");
 
-    window
-        .set_ignore_cursor_events(true)
-        .map_err(|e| e.to_string())?;
     let _ = window.set_decorations(false);
 
     #[cfg(target_os = "windows")]
     {
+        window
+            .set_ignore_cursor_events(true)
+            .map_err(|e| e.to_string())?;
         apply_win32_styles(&window)?;
         let _ = sync_overlay_bounds(&window)?;
     }
 
-    log::info!("[Overlay] Init complete — window configured but hidden");
+    log::info!("[Overlay] Init complete - window configured but hidden");
     Ok(())
 }
 
@@ -68,6 +71,18 @@ pub fn show_overlay(app: &AppHandle) -> Result<(), String> {
         let visible = window.is_visible().unwrap_or(false);
         if !visible {
             show_overlay_window(&window)?;
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let visible = window.is_visible().unwrap_or(false);
+        if !visible {
+            let _ = window.show();
+        }
+        if !OVERLAY_CLICK_THROUGH_SET.load(Ordering::SeqCst) {
+            let _ = window.set_ignore_cursor_events(true);
+            OVERLAY_CLICK_THROUGH_SET.store(true, Ordering::SeqCst);
         }
     }
 
@@ -149,6 +164,18 @@ pub fn show_sequence_points_overlay(app: &AppHandle) -> Result<(), String> {
         }
     }
 
+    #[cfg(target_os = "linux")]
+    {
+        let visible = window.is_visible().unwrap_or(false);
+        if !visible && !points.is_empty() {
+            let _ = window.show();
+        }
+        if !OVERLAY_CLICK_THROUGH_SET.load(Ordering::SeqCst) {
+            let _ = window.set_ignore_cursor_events(true);
+            OVERLAY_CLICK_THROUGH_SET.store(true, Ordering::SeqCst);
+        }
+    }
+
     emit_sequence_points(&window, bounds, &points, false);
     if points.is_empty() && !SEQUENCE_PICK_OVERLAY_ACTIVE.load(Ordering::SeqCst) {
         *LAST_ZONE_SHOW.lock().unwrap() = None;
@@ -170,6 +197,16 @@ pub fn show_sequence_pick_overlay(app: &AppHandle) -> Result<(), String> {
     {
         sync_overlay_bounds(&window)?;
         show_overlay_window(&window)?;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let visible = window.is_visible().unwrap_or(false);
+        if !visible {
+            let _ = window.show();
+        }
+        OVERLAY_CLICK_THROUGH_SET.store(false, Ordering::SeqCst);
+        let _ = window.set_ignore_cursor_events(false);
     }
 
     SEQUENCE_PICK_OVERLAY_ACTIVE.store(true, Ordering::SeqCst);
@@ -206,67 +243,6 @@ pub fn set_sequence_pick_mode(app: &AppHandle, active: bool) -> Result<(), Strin
     Ok(())
 }
 
-pub fn show_custom_stop_zone_pick_overlay(app: &AppHandle) -> Result<(), String> {
-    let window = app
-        .get_webview_window("overlay")
-        .ok_or_else(|| "Overlay window not found".to_string())?;
-    let bounds = current_virtual_screen_rect()
-        .ok_or_else(|| "Virtual screen bounds not available".to_string())?;
-
-    #[cfg(target_os = "windows")]
-    {
-        sync_overlay_bounds(&window)?;
-        show_overlay_window(&window)?;
-    }
-
-    CUSTOM_STOP_ZONE_PICK_OVERLAY_ACTIVE.store(true, Ordering::SeqCst);
-    show_overlay(app)?;
-    set_custom_stop_zone_pick_mode(app, true)?;
-
-    if let Some((x, y)) = current_cursor_position() {
-        let offset = VirtualScreenRect::new(x, y, 1, 1).offset_from(bounds);
-        let _ = window.emit(
-            "custom-stop-zone-preview",
-            serde_json::json!({
-                "cursorX": offset.left,
-                "cursorY": offset.top,
-            }),
-        );
-    }
-
-    Ok(())
-}
-
-pub fn set_custom_stop_zone_pick_mode(app: &AppHandle, active: bool) -> Result<(), String> {
-    CUSTOM_STOP_ZONE_PICK_OVERLAY_ACTIVE.store(active, Ordering::SeqCst);
-    if let Some(window) = app.get_webview_window("overlay") {
-        let _ = window.emit(
-            "custom-stop-zone-pick-mode",
-            serde_json::json!({
-                "active": active,
-            }),
-        );
-    }
-    Ok(())
-}
-
-pub fn hide_custom_stop_zone_pick_overlay(app: &AppHandle) -> Result<(), String> {
-    set_custom_stop_zone_pick_mode(app, false)?;
-    if let Some(window) = app.get_webview_window("overlay") {
-        let _ = window.emit("custom-stop-zone-clear-preview", ());
-        hide_overlay_window(&window);
-    }
-    Ok(())
-}
-
-pub fn end_custom_stop_zone_pick_overlay(app: &AppHandle) -> Result<(), String> {
-    set_custom_stop_zone_pick_mode(app, false)?;
-    if let Some(window) = app.get_webview_window("overlay") {
-        let _ = window.emit("custom-stop-zone-clear-preview", ());
-    }
-    Ok(())
-}
-
 fn emit_sequence_points(
     window: &tauri::WebviewWindow,
     bounds: VirtualScreenRect,
@@ -299,17 +275,13 @@ fn emit_sequence_points(
 // ---- Background timer ----
 
 pub fn check_auto_hide(app: &AppHandle) {
-    if SEQUENCE_PICK_OVERLAY_ACTIVE.load(Ordering::SeqCst)
-        || CUSTOM_STOP_ZONE_PICK_OVERLAY_ACTIVE.load(Ordering::SeqCst)
-    {
+    if SEQUENCE_PICK_OVERLAY_ACTIVE.load(Ordering::SeqCst) {
         return;
     }
 
     let mut last = LAST_ZONE_SHOW.lock().unwrap();
     if let Some(instant) = *last {
         if instant.elapsed() >= Duration::from_secs(3) {
-            // ↑ auto-hide after timer
-
             *last = None;
             if let Some(window) = app.get_webview_window("overlay") {
                 log::info!("[Overlay] Auto-hide: hiding window");
@@ -317,17 +289,6 @@ pub fn check_auto_hide(app: &AppHandle) {
             }
         }
     }
-}
-
-#[tauri::command]
-pub fn hide_overlay(app: AppHandle) -> Result<(), String> {
-    *LAST_ZONE_SHOW.lock().unwrap() = None;
-    SEQUENCE_PICK_OVERLAY_ACTIVE.store(false, Ordering::SeqCst);
-    CUSTOM_STOP_ZONE_PICK_OVERLAY_ACTIVE.store(false, Ordering::SeqCst);
-    if let Some(window) = app.get_webview_window("overlay") {
-        hide_overlay_window(&window);
-    }
-    Ok(())
 }
 
 fn hide_overlay_window(window: &tauri::WebviewWindow) {
@@ -338,7 +299,24 @@ fn hide_overlay_window(window: &tauri::WebviewWindow) {
         }
     }
     #[cfg(not(target_os = "windows"))]
-    let _ = window.hide();
+    {
+        let _ = window.hide();
+    }
+}
+
+#[tauri::command]
+pub fn hide_overlay(app: AppHandle) -> Result<(), String> {
+    *LAST_ZONE_SHOW.lock().unwrap() = None;
+    SEQUENCE_PICK_OVERLAY_ACTIVE.store(false, Ordering::SeqCst);
+    if let Some(window) = app.get_webview_window("overlay") {
+        #[cfg(target_os = "linux")]
+        {
+            OVERLAY_CLICK_THROUGH_SET.store(true, Ordering::SeqCst);
+            let _ = window.set_ignore_cursor_events(true);
+        }
+        hide_overlay_window(&window);
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "windows")]
@@ -429,5 +407,97 @@ fn show_overlay_window(window: &tauri::WebviewWindow) -> Result<(), String> {
         );
     }
 
+    Ok(())
+}
+
+#[tauri::command]
+pub fn start_sequence_pick(app: AppHandle) -> Result<(), String> {
+    show_sequence_pick_overlay(&app)
+}
+
+#[tauri::command]
+pub fn stop_sequence_pick(app: AppHandle) -> Result<(), String> {
+    set_sequence_pick_mode(&app, false)?;
+    if let Some(window) = app.get_webview_window("overlay") {
+        #[cfg(target_os = "linux")]
+        {
+            OVERLAY_CLICK_THROUGH_SET.store(true, Ordering::SeqCst);
+            let _ = window.set_ignore_cursor_events(true);
+        }
+        let _ = window.hide();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn sequence_point_picked(app: AppHandle, x: i32, y: i32, is_final: bool) -> Result<(), String> {
+    let state = app.state::<ClickerState>();
+    {
+        let mut settings = state.settings.lock().unwrap();
+        settings
+            .sequence_points
+            .push(crate::settings::SequencePoint {
+                id: format!("seq-{}", uuid::Uuid::new_v4()),
+                x,
+                y,
+                clicks: 1,
+            });
+    }
+
+    crate::ui_commands::notify_settings_changed(&app);
+    show_sequence_points_overlay(&app)?;
+
+    if is_final {
+        let _ = stop_sequence_pick(app);
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn remove_sequence_point(app: AppHandle, index: usize) -> Result<(), String> {
+    let state = app.state::<ClickerState>();
+    {
+        let mut settings = state.settings.lock().unwrap();
+        if index < settings.sequence_points.len() {
+            settings.sequence_points.remove(index);
+        }
+    }
+    crate::ui_commands::notify_settings_changed(&app);
+    show_sequence_points_overlay(&app)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn update_sequence_point(
+    app: AppHandle,
+    index: usize,
+    x: i32,
+    y: i32,
+    clicks: u32,
+) -> Result<(), String> {
+    let state = app.state::<ClickerState>();
+    {
+        let mut settings = state.settings.lock().unwrap();
+        if let Some(point) = settings.sequence_points.get_mut(index) {
+            point.x = x;
+            point.y = y;
+            point.clicks = clicks.clamp(1, 100000);
+        }
+    }
+    crate::ui_commands::notify_settings_changed(&app);
+    show_sequence_points_overlay(&app)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn clear_sequence_points(app: AppHandle) -> Result<(), String> {
+    let state = app.state::<ClickerState>();
+    {
+        let mut settings = state.settings.lock().unwrap();
+        settings.sequence_points.clear();
+    }
+    crate::ui_commands::notify_settings_changed(&app);
+    show_sequence_points_overlay(&app)?;
     Ok(())
 }

@@ -25,10 +25,18 @@ fn default_true() -> bool {
     true
 }
 
-use crate::engine::ProcessListEntry;
+#[derive(Clone, serde::Deserialize, serde::Serialize, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ProcessListEntry {
+    pub name: String,
+    #[serde(default)]
+    pub behavior: String,
+    #[serde(default)]
+    pub enabled: bool,
+}
 
 #[derive(Clone, serde::Deserialize, serde::Serialize, Debug)]
-#[serde(rename_all = "camelCase")]
+#[serde(default, rename_all = "camelCase")]
 pub struct ClickerSettings {
     // Meta
     pub version: u32,
@@ -77,8 +85,12 @@ pub struct ClickerSettings {
     pub sequence_enabled: bool,
     pub sequence_points: Vec<SequencePoint>,
 
+    // Process list is Windows-only; kept with defaults so older settings still deserialize.
+    #[serde(default)]
     pub process_list_enabled: bool,
+    #[serde(default)]
     pub process_list_mode: String,
+    #[serde(default)]
     pub process_list_entries: Vec<ProcessListEntry>,
 
     // settings-only fields
@@ -103,11 +115,17 @@ pub struct ClickerSettings {
     pub show_stop_reason: bool,
     pub show_stop_overlay: bool,
     pub strict_hotkey_modifiers: bool,
+
+    // Frontend-only settings intentionally omitted from Rust defaults but kept
+    // for deserialization so old stores load without errors.
+    #[serde(default)]
+    pub minimize_to_tray: bool,
+    #[serde(default)]
+    pub always_on_top: bool,
 }
 
 // Frontend-only settings intentionally omitted from Rust:
-// language, minimizeToTray, theme, advancedSequenceLayout, alwaysOnTop,
-// accentColor, presets, activePresetId.
+// language, theme, advancedSequenceLayout, accentColor, presets, activePresetId.
 
 impl Default for ClickerSettings {
     fn default() -> Self {
@@ -179,6 +197,9 @@ impl Default for ClickerSettings {
             show_stop_reason: true,
             show_stop_overlay: true,
             strict_hotkey_modifiers: false,
+
+            minimize_to_tray: false,
+            always_on_top: false,
         }
     }
 }

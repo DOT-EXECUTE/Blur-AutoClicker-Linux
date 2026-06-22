@@ -9,6 +9,7 @@ import { lazy, useCallback, useEffect, useLayoutEffect, useRef, useState } from 
 import { applyAccentTheme } from "./accentTheme";
 import UpdateBanner from "./components/Updatebanner";
 import { canonicalizeHotkeyForBackend } from "./hotkeys";
+import SystemWarningBanner from "./components/SystemWarningBanner";
 
 import {
   buildPresetSnapshot,
@@ -33,10 +34,9 @@ const SimplePanel = lazy(() => import("./components/panels/SimplePanel"));
 const AdvancedPanel = lazy(
   () => import("./components/panels/advanced/AdvancedPanel"),
 );
-const ZonesPanel = lazy(() => import("./components/panels/zones/ZonesPanel"));
 const SettingsPanel = lazy(() => import("./components/panels/SettingsPanel"));
 const TitleBar = lazy(() => import("./components/TitleBar"));
-export type Tab = "simple" | "advanced" | "zones" | "settings";
+export type Tab = "simple" | "advanced" | "settings";
 
 const BACKEND_SETTINGS_SCHEMA_VERSION = 10;
 const MAX_DROPDOWN_OVERFLOW_BOTTOM = 220;
@@ -59,7 +59,6 @@ function getPanelSize(
     return { width: 650, height: 175 + extra };
   }
   if (tab === "settings") return { width: 560, height: 720 + extra };
-  if (tab === "zones") return { width: 750, height: 720 + extra };
   if (advancedSequenceLayout === "tall") {
     return { width: 560, height: 720 + extra };
   }
@@ -893,7 +892,6 @@ export default function App() {
 
       await invoke("reset_settings");
       await clearSavedSettings();
-      await invoke("set_autostart_enabled", { enabled: false }).catch(() => { });
       await getCurrentWindow().setAlwaysOnTop(DEFAULT_SETTINGS.alwaysOnTop);
 
       lastValidHotkeyRef.current = DEFAULT_SETTINGS.hotkey;
@@ -923,7 +921,7 @@ export default function App() {
           running={status.running}
           paused={status.paused}
           stopReason={
-            settings.showStopReason && (tab === "simple" || tab === "advanced" || tab === "zones")
+            settings.showStopReason && (tab === "simple" || tab === "advanced")
               ? status.stopReason
               : null
           }
@@ -940,6 +938,7 @@ export default function App() {
             latestVersion={updateInfo.latestVersion}
           />
         )}
+        <SystemWarningBanner />
         <main className="panel-area">
           {tab === "simple" && (
             <SimplePanel settings={settings} update={updateSettings} />
@@ -952,13 +951,6 @@ export default function App() {
               running={status.running}
               activeSequenceIndex={status.activeSequenceIndex}
               activeSequenceTick={status.activeSequenceTick}
-            />
-          )}
-          {tab === "zones" && (
-            <ZonesPanel
-              settings={settings}
-              update={updateSettings}
-              showInfo={true}
             />
           )}
           {tab === "settings" && (

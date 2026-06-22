@@ -1,70 +1,131 @@
-<div align="center">
-  <p align="center">
-    <a href="https://github.com/Blur009/Blur-AutoClicker/releases"><img src="https://img.shields.io/github/downloads/Blur009/Blur-AutoClicker/total?style=for-the-badge&label=downloads" alt="Downloads"></a>
-    <img src="https://img.shields.io/github/package-json/v/Blur009/Blur-AutoClicker?style=for-the-badge&label=version" alt="Version">
-    <img src="https://img.shields.io/github/license/Blur009/Blur-AutoClicker?style=for-the-badge" alt="License">
-    <img src="https://img.shields.io/github/stars/Blur009/Blur-AutoClicker?style=for-the-badge&label=stars" alt="Stars">
-    <a href="https://discord.gg/jhWEW747x5"><img src="https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"></a>
-  </p>
+[![Downloads](https://img.shields.io/github/downloads/Zynix-Scripts/Blur-AutoClicker-Linux/total?style=for-the-badge&label=downloads)](https://github.com/Zynix-Scripts/Blur-AutoClicker-Linux/releases)
+[![Version](https://img.shields.io/github/package-json/v/Zynix-Scripts/Blur-AutoClicker-Linux?style=for-the-badge&label=version)](https://github.com/Zynix-Scripts/Blur-AutoClicker-Linux/releases)
+[![License](https://img.shields.io/github/license/Zynix-Scripts/Blur-AutoClicker-Linux?style=for-the-badge)](LICENSE)
 
-  
+# Blur Auto Clicker | Linux Port
 
-  # Blur Auto Clicker
+## Wayland-First Auto Clicker for Linux
 
+This port is built with **Wayland first as the other supports x11 fully**. Most auto clickers on Linux only support X11 or break under native Wayland. This project aims to be the autoclicker that actually works on modern compositors.
 
-  <img src="https://github.com/Blur009/Blur-AutoClicker/blob/main/public/V3.0.0_UI.png" width="600"/>
+## Why
 
-  <p align="center"><em>An auto clicker that actually clicks at the speed you set.</em></p>
-  
-  <a href="https://ko-fi.com/blur009">
-    <img src="https://ko-fi.com/img/githubbutton_sm.svg" alt="Donate on Ko-fi" width="350">
-  </a>
+A lot of popular auto clickers like OP Auto Clicker and Speed Auto Clicker are inaccurate at higher speeds | setting 50 CPS might give you 40 or 60. This project aims for precision: click exactly at the CPS you set, even at high speeds.
 
-  ---
-
-  <a href="#features">Features</a> ·
-  <a href="#quick-start">Quick Start</a> ·
-  <a href="#faq">FAQ</a> ·
-  <a href="#license">License</a>
-  
-  
-
-</div>
+Performance is a core focus. RAM usage stays around 50 MB and is designed to never exceed 100 MB.
 
 ---
-Most auto clickers aren't accurate at high speeds. Set it to 50 CPS and you might get 40. Or 60. This one actually hits the speed you set. It also bundles the useful features from other auto clickers into one place, and adds a few extras. RAM is around 100mb and stays under 200mb (yes its a lot but sadly it cant be reduced due to Webview2).
+
+## Platform Support
+
+| Feature | X11 | Wayland (KDE / wlroots) | Notes |
+|---------|-----|------------------------|-------|
+| **Auto Clicking** | Full | Full | Wayland uses `uinput` (needs `input` group) |
+| **Corner / Edge Stop** | Full | Full | Uses cached monitor geometry from Tauri |
+| **Position Clicking** | Full | Limited | Absolute cursor move unavailable on pure Wayland |
+| **Always on Top** | Full | Limited | Pin works via `_NET_WM_STATE_ABOVE`; pure Wayland has no standard protocol |
+| **Cursor Position** | Full | Unavailable | No standard Wayland protocol for global cursor query |
+| **Overlay** | Full | Full | Uses Tauri-provided monitor bounds |
+
+### Running under XWayland
+
+If you are on a hybrid XWayland system (both `DISPLAY` and `WAYLAND_DISPLAY` are set), the app automatically forces `GDK_BACKEND=x11` so that window-manager features like Always on Top work reliably. The click backend will still use XTEST, which only affects XWayland windows.
+
+### Pure Wayland Requirements
+
+- `uinput` kernel module loaded
+- User in the `input` group (`sudo usermod -aG input $USER`, then log out and back in)
 
 ---
 
 ## Features
 
+<div align="center">
+    <img src="https://github.com/Blur009/Blur-AutoClicker/blob/main/public/30s_500cps_Speed_Test.png" width="600"/>
+</div>
+<p align="center"><em>Blur Auto Clicker reaching 500 CPS steadily</em></p>
+
 **Simple Mode:**
-- On/off indicator (logo turns green when running)
-- Left, right, or middle mouse button
-- Keyboard key pressing with case control
-- Hold or toggle activation
+- On / Off indicator (Blur logo turns green when active)
+- Individual mouse button settings (left, right, middle)
+- Keyboard key pressing with lower/uppercase letter control
+- Hold / Toggle activation modes
 - Customizable hotkeys
 
-**Advanced Mode** (everything in Simple, plus):
+**Advanced Mode** (includes all Simple Mode features plus):
 - Adjustable click timing (duty cycle)
-- Random CPS within a range
-- Corner and edge stopping (auto-off near screen edges)
-- Click and time limits
+- Speed Range Mode (randomizes CPS within a range)
+- Corner and edge stopping (failsafe stop zones)
+- Click and Time limits (stop after a set number of clicks or elapsed time)
 - Double clicks
-- Position clicking (pick a spot, mouse moves and clicks there)
-- Per second, minute, hour, or day
+- Position Clicking (pick a position | the mouse moves there and clicks)
+- Clicks adjustable to per Second, Minute, Hour, or Day
 
+**Other Features:**
+- Click stats (total clicks, sessions, avg CPU)
+- Multi-monitor aware edge/corner detection
+
+---
 
 ## Quick Start
 
-<a href="https://github.com/Blur009/Blur-AutoClicker/releases/latest">
-  <img src="https://github.com/machiav3lli/oandbackupx/blob/034b226cea5c1b30eb4f6a6f313e4dadcbb0ece4/badge_github.png" alt="Download from GitHub" height="50">
-</a>
+<div align="center">
+  <a href="https://github.com/Zynix-Scripts/Blur-AutoClicker-Linux/releases/latest">
+    <img src="https://github.com/machiav3lli/oandbackupx/blob/034b226cea5c1b30eb4f6a6f313e4dadcbb0ece4/badge_github.png" alt="Download from GitHub" height="75">
+  </a>
+</div>
 
-Installed to `%localappdata%/BlurAutoClicker/BlurAutoClicker.exe`.  
-Config and stats are saved in `%appdata%/BlurAutoClicker`.
+This is a portable binary | no installer needed.
 
-> On version 2.1.2 or below? Delete the old executable first — the installer won't do it. Old configs won't work with v3+, they'll be deleted on first launch.
+Config and stats are stored in `~/.local/share/BlurAutoClicker/`.
+
+---
+
+## Building From Source
+
+### Requirements:
+- Node.js 20 or newer
+- Rust via `rustup`
+- Linux system dependencies for Tauri (see [Tauri prerequisites](https://tauri.app/start/prerequisites/))
+
+### Setup:
+```bash
+git clone https://github.com/Zynix-Scripts/Blur-AutoClicker-Linux.git
+cd Blur-AutoClicker-Linux
+```
+
+**To setup automatically (Suggested option, Arch & Ubuntu)**:
+```bash
+./setup.sh
+```
+and follow the prompts
+
+**OR**
+
+Manually run (Best for development):
+```bash
+npm install
+rustup default stable
+```
+
+Run the app in development:
+```bash
+npm exec tauri dev
+```
+
+Build a release bundle:
+```bash
+npm exec tauri build
+```
+
+Useful validation commands:
+```bash
+npm run lint
+npm run frontend:build
+cargo test --manifest-path src-tauri/Cargo.toml
+```
+
+The built binary and packages are written to `src-tauri/target/release/bundle/`.
 
 ---
 
@@ -73,13 +134,7 @@ Config and stats are saved in `%appdata%/BlurAutoClicker`.
 <details>
 <summary><b>Why is CPS capped at 500?</b></summary>
 
-Windows has a limit of around 500 CPS for mouse events. The timer resolution bottoms out at about 1ms (1000 CPS), but Windows also needs to do other things, so the practical limit is around 800 CPS. Since I can't guarantee that on every machine, it's set to 500. (A 1000 cps setting is available but not recommended.)
-</details>
-
-<details>
-<summary><b>Windows SmartScreen warning?</b></summary>
-
-The installer isn't signed, so Windows may show a SmartScreen warning. Tauri updater signing is separate from Windows Authenticode signing. See <a href="docs/windows-release-trust.md">docs/windows-release-trust.md</a> for details.
+The practical limit for reliable mouse events on most systems is around 500 CPS. A 1000 CPS setting is available but not recommended.
 </details>
 
 <details>
@@ -90,6 +145,15 @@ Yes — see <a href="BUILDING.md">BUILDING.md</a> for setup, build, and validati
 
 ---
 
+## Support the main Project
+
+[![ko-fi](https://www.ko-fi.com/img/donate_sm.png)](https://ko-fi.com/blur009)
+
+## Support the linux port
+You can support the linux port by starring the repository and sharing it with friends. Thank you!
+
+---
+
 ## License
 
-Licensed under the [GNU General Public License](LICENSE).
+This project is licensed under the [GNU General Public License v3.0](https://www.gnu.org/licenses/gpl-3.0.en.html#license-text).

@@ -1,15 +1,12 @@
 mod settings;
 use settings::ClickerSettings;
 mod app_state;
-mod autostart;
-mod custom_stop_zone_picker;
 mod engine;
 mod hotkeys;
 mod overlay;
-mod sequence_picker;
+mod system_check;
 mod ui_commands;
 mod updates;
-mod window_lifecycle;
 
 use crate::app_state::ClickerState;
 use crate::app_state::ClickerStatusPayload;
@@ -68,10 +65,9 @@ pub fn run() {
             TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
                 .menu(&menu)
-                .tooltip("BlurAutoClicker")
+                .tooltip("BlurAutoClicker Linux")
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show" => {
-                        crate::window_lifecycle::on_show(app);
                         if let Some(window) = app.get_webview_window("main") {
                             let _ = window.show();
                             let _ = window.set_focus();
@@ -80,8 +76,6 @@ pub fn run() {
                     "quit" => {
                         crate::overlay::OVERLAY_THREAD_RUNNING
                             .store(false, std::sync::atomic::Ordering::SeqCst);
-                        crate::sequence_picker::cancel_sequence_point_pick_inner(app);
-                        crate::custom_stop_zone_picker::cancel_custom_stop_zone_pick_inner(app);
                         app.exit(0);
                     }
                     _ => {}
@@ -94,7 +88,6 @@ pub fn run() {
                     } = event
                     {
                         let app = tray.app_handle();
-                        crate::window_lifecycle::on_show(app);
                         if let Some(window) = app.get_webview_window("main") {
                             let _ = window.show();
                             let _ = window.set_focus();
@@ -112,8 +105,6 @@ pub fn run() {
                     overlay::check_auto_hide(&auto_hide_handle);
                 }
             });
-
-            window_lifecycle::start_periodic_trimming(30);
 
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -135,6 +126,42 @@ pub fn run() {
                 }
             });
 
+            if let Some(window) = app.get_webview_window("main") {
+                if let Ok(monitors) = window.available_monitors() {
+                    let monitor_count = monitors.len();
+                    let rects: Vec<crate::engine::mouse::VirtualScreenRect> = monitors
+                        .into_iter()
+                        .map(|m| {
+                            let pos = m.position();
+                            let size = m.size();
+                            crate::engine::mouse::VirtualScreenRect::new(
+                                pos.x as i32,
+                                pos.y as i32,
+                                size.width as i32,
+                                size.height as i32,
+                            )
+                        })
+                        .collect();
+
+                    if !rects.is_empty() {
+                        let left = rects.iter().map(|r| r.left).min().unwrap_or(0);
+                        let top = rects.iter().map(|r| r.top).min().unwrap_or(0);
+                        let right = rects.iter().map(|r| r.right()).max().unwrap_or(0);
+                        let bottom = rects.iter().map(|r| r.bottom()).max().unwrap_or(0);
+                        crate::engine::mouse::set_cached_virtual_screen_rect(
+                            crate::engine::mouse::VirtualScreenRect::new(
+                                left,
+                                top,
+                                right - left,
+                                bottom - top,
+                            ),
+                        );
+                    }
+                    crate::engine::mouse::set_cached_monitor_rects(rects.clone());
+                    log::info!("[Init] Cached {} monitor(s) from Tauri", monitor_count);
+                }
+            }
+
             let initial_hotkey = {
                 let state = app.state::<ClickerState>();
                 let hotkey = state.settings.lock().unwrap().hotkey.clone();
@@ -143,20 +170,16 @@ pub fn run() {
 
             let handle = app.handle().clone();
             start_hotkey_listener(handle.clone());
+            hotkeys::start_scroll_hook();
             register_hotkey_inner(&handle, initial_hotkey).map_err(std::io::Error::other)?;
             emit_status(&handle);
             overlay::init_overlay(app.handle())?;
-
-            if std::env::args().any(|a| a == "--autostart") {
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.hide();
-                }
-            }
 
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             ui_commands::set_webview_zoom,
+            ui_commands::set_always_on_top_linux,
             ui_commands::get_text_scale_factor,
             ui_commands::start_clicker,
             ui_commands::stop_clicker,
@@ -168,20 +191,20 @@ pub fn run() {
             ui_commands::register_hotkey,
             ui_commands::set_hotkey_capture_active,
             ui_commands::pick_position,
-            ui_commands::start_sequence_point_pick,
-            ui_commands::cancel_sequence_point_pick,
-            ui_commands::start_custom_stop_zone_pick,
-            ui_commands::cancel_custom_stop_zone_pick,
             ui_commands::get_app_info,
             ui_commands::get_stats,
             ui_commands::reset_stats,
             updates::update_checker::check_for_updates,
             overlay::hide_overlay,
+            overlay::start_sequence_pick,
+            overlay::stop_sequence_pick,
+            overlay::sequence_point_picked,
+            overlay::remove_sequence_point,
+            overlay::update_sequence_point,
+            overlay::clear_sequence_points,
             ui_commands::hide_main_window,
             ui_commands::quit_app,
-            ui_commands::get_autostart_enabled,
-            ui_commands::set_autostart_enabled,
-            ui_commands::list_processes,
+            system_check::check_system_deps,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -193,12 +216,30 @@ pub fn run() {
             } = &event
             {
                 if label == "main" {
-                    api.prevent_close();
-                    crate::overlay::OVERLAY_THREAD_RUNNING
-                        .store(false, std::sync::atomic::Ordering::SeqCst);
-                    crate::sequence_picker::cancel_sequence_point_pick_inner(app_handle);
-                    crate::custom_stop_zone_picker::cancel_custom_stop_zone_pick_inner(app_handle);
-                    app_handle.exit(0);
+                    let minimize_to_tray = {
+                        let state = app_handle.state::<ClickerState>();
+                        let settings = state.settings.lock().unwrap();
+                        settings.minimize_to_tray
+                    };
+                    if minimize_to_tray {
+                        api.prevent_close();
+                        if let Some(window) = app_handle.get_webview_window("main") {
+                            let _ = window.hide();
+                        }
+                    } else {
+                        crate::overlay::OVERLAY_THREAD_RUNNING
+                            .store(false, std::sync::atomic::Ordering::SeqCst);
+                        if let Some(overlay) = app_handle.get_webview_window("overlay") {
+                            let _ = overlay.destroy();
+                        }
+                    }
+                }
+            }
+            if let tauri::RunEvent::ExitRequested { .. } = &event {
+                crate::overlay::OVERLAY_THREAD_RUNNING
+                    .store(false, std::sync::atomic::Ordering::SeqCst);
+                if let Some(overlay) = app_handle.get_webview_window("overlay") {
+                    let _ = overlay.destroy();
                 }
             }
         });

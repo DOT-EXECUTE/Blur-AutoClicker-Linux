@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "BlurAutoClicker",
+  "productName": "BlurAutoClicker Linux",
   "version": "3.8.0",
-  "identifier": "BlurAutoClicker",
+  "identifier": "com.blur009.blurautoclicker",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5173",
@@ -15,10 +15,12 @@
     "windows": [
       {
         "label": "main",
-        "title": "BlurAutoClicker",
+        "title": "BlurAutoClicker Linux",
         "width": 500,
         "height": 150,
-        "resizable": false,
+        "minWidth": 420,
+        "minHeight": 160,
+        "resizable": true,
         "fullscreen": false,
         "decorations": false,
         "transparent": true,
@@ -52,45 +54,44 @@
   "plugins": {
     "updater": {
       "endpoints": [
-        "https://github.com/Blur009/Blur-AutoClicker/releases/latest/download/latest.json"
+        "https://github.com/Zynix-Scripts/Blur-AutoClicker-Linux/releases/latest/download/latest.json"
       ],
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDIyREY0RTc2QTU4Qjc1N0UKUldSK2RZdWxkazdmSW1IQmI4ZVMwOTRzWnBiVENhMFNYMFRtN0V4R3N0Q2JXQUdqM2t4VnRnNUYK"
-    },
-    "bundle": {
-      "active": true,
-      "targets": "nsis",
-      "createUpdaterArtifacts": true,
-      "publisher": "Blur009",
-      "copyright": "Copyright (c) Blur009",
-      "category": "Utility",
-      "shortDescription": "Configurable auto clicker with accurate CPS timing.",
-      "longDescription": "Performance-focused auto clicker with global hotkeys, optional overlay, and advanced timing. Licensed under GPLv3.",
-      "homepage": "https://github.com/Blur009/Blur-AutoClicker",
-      "icon": [
-        "icons/icon.ico"
-      ],
-      "windows": {
-        "webviewInstallMode": {
-          "type": "embedBootstrapper",
-          "silent": true
-        },
-        "nsis": {
-          "compression": "zlib"
-        }
-      }
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDIyREY0RTc2QTU4Qjc1N0UKUldTK2RZdWxkazdmSW1IQmI4ZVMwOTRzWnBiVENhMFNYMFRtN0V4R3N0Q2JXQUdqM2t4VnRnNUYK"
     }
   },
   "bundle": {
     "active": true,
-    "targets": "nsis",
+    "targets": ["deb", "rpm"],
     "createUpdaterArtifacts": true,
+    "publisher": "Blur009",
+    "copyright": "Copyright (c) Blur009",
+    "category": "Utility",
+    "license": "GPL-3.0",
+    "shortDescription": "Configurable auto clicker with accurate CPS timing.",
+    "longDescription": "Performance-focused auto clicker with global hotkeys, optional overlay, and advanced timing. Licensed under GPLv3.",
+    "homepage": "https://github.com/Blur009/Blur-AutoClicker",
     "icon": [
-      "icons/icon.ico"
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico",
+      "icons/icon.png"
     ],
-    "windows": {
-      "webviewInstallMode": {
-        "type": "embedBootstrapper",
-        "silent": true
+    "linux": {
+      "deb": {
+        "depends": [
+          "libwebkit2gtk-4.1-0",
+          "libgtk-3-0",
+          "libxdo3"
+        ]
+      },
+      "rpm": {
+        "depends": [
+          "webkit2gtk4.1",
+          "gtk3",
+          "libX11"
+        ]
       }
     }
   }

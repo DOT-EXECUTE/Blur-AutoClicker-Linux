@@ -1,17 +1,8 @@
 use super::cycle::{execute_click_cycle, ClickCycleKind, ClickCyclePlan};
 use super::worker::{sleep_interruptible, RunControl};
-use std::time::Duration;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use super::AUTOCLICKER_EXTRA_INFO;
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    SendInput, INPUT, INPUT_MOUSE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
-    MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN,
-    MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEINPUT,
-};
-use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
-};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VirtualScreenRect {
@@ -69,6 +60,33 @@ impl VirtualScreenRect {
     }
 }
 
+use std::sync::Mutex;
+
+static CACHED_MONITOR_RECTS: Mutex<Option<Vec<VirtualScreenRect>>> = Mutex::new(None);
+static CACHED_VIRTUAL_SCREEN_RECT: Mutex<Option<VirtualScreenRect>> = Mutex::new(None);
+
+pub fn set_cached_monitor_rects(rects: Vec<VirtualScreenRect>) {
+    let mut guard = CACHED_MONITOR_RECTS.lock().unwrap();
+    *guard = Some(rects);
+}
+
+pub fn set_cached_virtual_screen_rect(rect: VirtualScreenRect) {
+    let mut guard = CACHED_VIRTUAL_SCREEN_RECT.lock().unwrap();
+    *guard = Some(rect);
+}
+
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+    SendInput, INPUT, INPUT_MOUSE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
+    MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN,
+    MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEINPUT,
+};
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+};
+
+#[cfg(target_os = "windows")]
 pub fn current_cursor_position() -> Option<(i32, i32)> {
     use windows_sys::Win32::Foundation::POINT;
     use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
@@ -82,6 +100,7 @@ pub fn current_cursor_position() -> Option<(i32, i32)> {
     }
 }
 
+#[cfg(target_os = "windows")]
 pub fn current_virtual_screen_rect() -> Option<VirtualScreenRect> {
     let left = unsafe { GetSystemMetrics(SM_XVIRTUALSCREEN) };
     let top = unsafe { GetSystemMetrics(SM_YVIRTUALSCREEN) };
@@ -142,16 +161,7 @@ pub fn current_monitor_rects() -> Option<Vec<VirtualScreenRect>> {
     Some(monitors)
 }
 
-#[cfg(not(target_os = "windows"))]
-pub fn current_monitor_rects() -> Option<Vec<VirtualScreenRect>> {
-    current_virtual_screen_rect().map(|screen| vec![screen])
-}
-
-#[inline]
-pub fn get_cursor_pos() -> (i32, i32) {
-    current_cursor_position().unwrap_or((0, 0))
-}
-
+#[cfg(target_os = "windows")]
 #[inline]
 pub fn move_mouse(target_x: i32, target_y: i32) {
     if let Some(screen_rect) = current_virtual_screen_rect() {
@@ -164,6 +174,7 @@ pub fn move_mouse(target_x: i32, target_y: i32) {
     }
 }
 
+#[cfg(target_os = "windows")]
 #[inline]
 pub fn make_movement(end_x: i32, end_y: i32) -> INPUT {
     INPUT {
@@ -181,6 +192,7 @@ pub fn make_movement(end_x: i32, end_y: i32) -> INPUT {
     }
 }
 
+#[cfg(target_os = "windows")]
 #[inline]
 pub fn make_input(flags: u32, time: u32) -> INPUT {
     INPUT {
@@ -198,12 +210,14 @@ pub fn make_input(flags: u32, time: u32) -> INPUT {
     }
 }
 
+#[cfg(target_os = "windows")]
 #[inline]
 pub fn send_mouse_event(flags: u32) {
     let input = make_input(flags, 0);
     unsafe { SendInput(1, &input, std::mem::size_of::<INPUT>() as i32) };
 }
 
+#[cfg(target_os = "windows")]
 pub fn send_batch(down: u32, up: u32, n: usize) {
     let mut inputs: Vec<INPUT> = Vec::with_capacity(n * 2);
     for _ in 0..n {
@@ -217,6 +231,386 @@ pub fn send_batch(down: u32, up: u32, n: usize) {
             std::mem::size_of::<INPUT>() as i32,
         )
     };
+}
+
+#[cfg(target_os = "windows")]
+#[inline]
+pub fn get_button_flags(button: i32) -> (u32, u32) {
+    match button {
+        2 => (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP),
+        3 => (MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP),
+        _ => (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP),
+    }
+}
+
+#[cfg(target_os = "linux")]
+mod linux {
+    pub fn use_x11() -> bool {
+        std::env::var_os("DISPLAY").is_some()
+    }
+
+    pub mod x11 {
+        use std::sync::OnceLock;
+        use x11rb::connection::Connection;
+        use x11rb::protocol::xproto::ConnectionExt as XprotoExt;
+        use x11rb::protocol::xtest::ConnectionExt as XTestExt;
+        use x11rb::rust_connection::RustConnection;
+
+        struct State {
+            conn: RustConnection,
+            root: u32,
+            screen_num: usize,
+        }
+
+        static STATE: OnceLock<Option<State>> = OnceLock::new();
+
+        fn get() -> Option<&'static State> {
+            STATE
+                .get_or_init(|| match x11rb::connect(None) {
+                    Ok((conn, snum)) => {
+                        let root = conn.setup().roots[snum].root;
+                        Some(State {
+                            conn,
+                            root,
+                            screen_num: snum,
+                        })
+                    }
+                    Err(e) => {
+                        log::error!(
+                            "[x11] Failed to connect to X server (DISPLAY={:?}): {e}",
+                            std::env::var_os("DISPLAY")
+                        );
+                        None
+                    }
+                })
+                .as_ref()
+        }
+
+        pub fn cursor_pos() -> Option<(i32, i32)> {
+            let s = get()?;
+            match s.conn.query_pointer(s.root) {
+                Ok(cookie) => match cookie.reply() {
+                    Ok(r) => Some((r.root_x as i32, r.root_y as i32)),
+                    Err(e) => {
+                        log::error!("[x11] query_pointer reply failed: {e:?}");
+                        None
+                    }
+                },
+                Err(e) => {
+                    log::error!("[x11] query_pointer request failed: {e:?}");
+                    None
+                }
+            }
+        }
+
+        pub fn virtual_screen() -> Option<super::super::VirtualScreenRect> {
+            let s = get()?;
+            let screen = &s.conn.setup().roots[s.screen_num];
+            Some(super::super::VirtualScreenRect::new(
+                0,
+                0,
+                screen.width_in_pixels as i32,
+                screen.height_in_pixels as i32,
+            ))
+        }
+
+        pub fn monitor_rects() -> Option<Vec<super::super::VirtualScreenRect>> {
+            use x11rb::protocol::randr::ConnectionExt as RandrExt;
+            let s = get()?;
+
+            let randr = s
+                .conn
+                .randr_get_monitors(s.root, true)
+                .ok()
+                .and_then(|c| c.reply().ok())
+                .filter(|r| !r.monitors.is_empty())
+                .map(|reply| {
+                    let mut rects: Vec<_> = reply
+                        .monitors
+                        .iter()
+                        .map(|m| {
+                            super::super::VirtualScreenRect::new(
+                                m.x as i32,
+                                m.y as i32,
+                                m.width as i32,
+                                m.height as i32,
+                            )
+                        })
+                        .collect();
+                    rects.sort_by_key(|r| (r.top, r.left));
+                    rects
+                });
+
+            randr.or_else(|| virtual_screen().map(|r| vec![r]))
+        }
+
+        pub fn move_cursor(x: i32, y: i32) {
+            let Some(s) = get() else {
+                log::error!("[x11] Cannot move cursor: no X11 connection available");
+                return;
+            };
+            if let Err(e) = s
+                .conn
+                .warp_pointer(0u32, s.root, 0, 0, 0, 0, x as i16, y as i16)
+            {
+                log::error!("[x11] warp_pointer request failed: {e:?}");
+            }
+            if let Err(e) = s.conn.flush() {
+                log::error!("[x11] flush failed: {e:?}");
+            }
+        }
+
+        pub fn send_button(flags: u32) {
+            let Some(s) = get() else {
+                log::error!("[x11] Cannot send button: no X11 connection available");
+                return;
+            };
+            let (button, is_down) = super::decode_linux_flag(flags);
+            let event_type: u8 = if is_down { 4 } else { 5 };
+            let x11_btn: u8 = match button {
+                2 => 3,
+                3 => 2,
+                _ => 1,
+            };
+            if let Err(e) = s
+                .conn
+                .xtest_fake_input(event_type, x11_btn, 0, s.root, 0, 0, 0)
+            {
+                log::error!("[x11] xtest_fake_input request failed: {e:?}");
+            }
+            if let Err(e) = s.conn.flush() {
+                log::error!("[x11] Connection flush failed: {e:?}");
+            }
+        }
+    }
+
+    pub mod uinput {
+        use evdev::uinput::VirtualDevice;
+        use evdev::{AttributeSet, EventType, InputEvent, Key, RelativeAxisType};
+        use std::sync::{Mutex, OnceLock};
+
+        static DEVICE: OnceLock<Option<Mutex<VirtualDevice>>> = OnceLock::new();
+
+        fn get() -> Option<&'static Mutex<VirtualDevice>> {
+            DEVICE.get_or_init(|| {
+                let builder = match evdev::uinput::VirtualDeviceBuilder::new() {
+                    Ok(b) => b,
+                    Err(e) => {
+                        log::error!("[uinput] Failed to open /dev/uinput: {e}. Make sure the uinput module is loaded and your user is in the 'input' group.");
+                        return None;
+                    }
+                };
+                let dev = match builder
+                    .name("blur-autoclicker-mouse")
+                    .with_keys(&AttributeSet::from_iter([
+                        Key::BTN_LEFT,
+                        Key::BTN_RIGHT,
+                        Key::BTN_MIDDLE,
+                    ]))
+                    .and_then(|b| b.with_relative_axes(&AttributeSet::from_iter([
+                        RelativeAxisType::REL_X,
+                        RelativeAxisType::REL_Y,
+                    ])))
+                    .and_then(|b| b.build())
+                {
+                    Ok(d) => d,
+                    Err(e) => {
+                        log::error!("[uinput] Failed to build virtual device: {e}");
+                        return None;
+                    }
+                };
+                Some(Mutex::new(dev))
+            }).as_ref()
+        }
+
+        pub fn available() -> bool {
+            get().is_some()
+        }
+
+        pub fn send_button(flags: u32) {
+            let Some(dev_lock) = get() else {
+                log::error!("[uinput] Cannot send button: virtual device unavailable - is uinput module loaded and user in 'input' group?");
+                return;
+            };
+            let Ok(mut dev) = dev_lock.lock() else {
+                log::error!("[uinput] Failed to lock virtual device mutex");
+                return;
+            };
+            let (button, is_down) = super::decode_linux_flag(flags);
+            let key = match button {
+                2 => Key::BTN_RIGHT,
+                3 => Key::BTN_MIDDLE,
+                _ => Key::BTN_LEFT,
+            };
+            let value: i32 = if is_down { 1 } else { 0 };
+            if let Err(e) = dev.emit(&[
+                InputEvent::new(EventType::KEY, key.code(), value),
+                InputEvent::new(EventType::SYNCHRONIZATION, 0, 0),
+            ]) {
+                log::error!("[uinput] emit failed: {e}");
+            }
+        }
+
+        #[allow(dead_code)]
+        pub fn move_relative(dx: i32, dy: i32) {
+            let Some(dev_lock) = get() else { return };
+            let Ok(mut dev) = dev_lock.lock() else { return };
+            let _ = dev.emit(&[
+                InputEvent::new(EventType::RELATIVE, RelativeAxisType::REL_X.0, dx),
+                InputEvent::new(EventType::RELATIVE, RelativeAxisType::REL_Y.0, dy),
+                InputEvent::new(EventType::SYNCHRONIZATION, 0, 0),
+            ]);
+        }
+    }
+
+    pub const LEFT_DOWN: u32 = 0x11;
+    pub const LEFT_UP: u32 = 0x10;
+    pub const RIGHT_DOWN: u32 = 0x21;
+    pub const RIGHT_UP: u32 = 0x20;
+    pub const MIDDLE_DOWN: u32 = 0x31;
+    pub const MIDDLE_UP: u32 = 0x30;
+
+    pub fn decode_linux_flag(flags: u32) -> (u8, bool) {
+        ((flags >> 4) as u8, (flags & 1) == 1)
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub fn linux_use_x11() -> bool {
+    linux::use_x11()
+}
+
+#[cfg(target_os = "linux")]
+pub fn uinput_available() -> bool {
+    linux::uinput::available()
+}
+
+#[cfg(target_os = "linux")]
+pub fn linux_mouse_diagnostic() -> String {
+    if linux::use_x11() {
+        match x11rb::connect(None) {
+            Ok((conn, _)) => {
+                use x11rb::connection::RequestConnection;
+                let xtest_ok = conn
+                    .extension_information(x11rb::protocol::xtest::X11_EXTENSION_NAME)
+                    .ok()
+                    .flatten()
+                    .is_some();
+                let mut msg = format!("X11 backend (DISPLAY={:?})", std::env::var_os("DISPLAY"));
+                if xtest_ok {
+                    msg.push_str(" - XTEST extension available");
+                } else {
+                    msg.push_str(" - XTEST extension MISSING");
+                }
+
+                if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+                    msg.push_str(" | WARNING: running under XWayland - clicks only affect X11 windows, not native Wayland apps");
+                }
+                msg
+            }
+            Err(e) => {
+                format!(
+                    "X11 backend (DISPLAY={:?}) - CONNECTION FAILED: {e}",
+                    std::env::var_os("DISPLAY")
+                )
+            }
+        }
+    } else {
+        let uinput_path = std::path::Path::new("/dev/uinput");
+        let exists = uinput_path.exists();
+        let writable = std::fs::OpenOptions::new()
+            .write(true)
+            .open(uinput_path)
+            .is_ok();
+        if exists && writable {
+            format!("Wayland uinput backend - /dev/uinput is accessible")
+        } else if exists {
+            format!("Wayland uinput backend - /dev/uinput exists but is NOT writable (user not in 'input' group?)")
+        } else {
+            format!(
+                "Wayland uinput backend - /dev/uinput does not exist (uinput module not loaded?)"
+            )
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub fn current_cursor_position() -> Option<(i32, i32)> {
+    if linux::use_x11() {
+        linux::x11::cursor_pos()
+    } else {
+        log::warn!("[mouse] cursor position unavailable on pure Wayland without XWayland");
+        None
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub fn current_virtual_screen_rect() -> Option<VirtualScreenRect> {
+    if linux::use_x11() {
+        linux::x11::virtual_screen()
+    } else {
+        None
+    }
+    .or_else(|| {
+        let guard = CACHED_VIRTUAL_SCREEN_RECT.lock().unwrap();
+        guard.clone()
+    })
+}
+
+#[cfg(target_os = "linux")]
+pub fn current_monitor_rects() -> Option<Vec<VirtualScreenRect>> {
+    if linux::use_x11() {
+        linux::x11::monitor_rects()
+    } else {
+        current_virtual_screen_rect().map(|r| vec![r])
+    }
+    .or_else(|| {
+        let guard = CACHED_MONITOR_RECTS.lock().unwrap();
+        guard.clone()
+    })
+}
+
+#[cfg(target_os = "linux")]
+#[inline]
+pub fn move_mouse(x: i32, y: i32) {
+    if linux::use_x11() {
+        linux::x11::move_cursor(x, y);
+    } else {
+        log::debug!("[mouse] move_mouse: Wayland abs positioning not supported");
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[inline]
+pub fn send_mouse_event(flags: u32) {
+    if linux::use_x11() {
+        linux::x11::send_button(flags);
+    } else {
+        linux::uinput::send_button(flags);
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub fn send_batch(down: u32, up: u32, n: usize) {
+    for _ in 0..n {
+        send_mouse_event(down);
+        send_mouse_event(up);
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[inline]
+pub fn get_button_flags(button: i32) -> (u32, u32) {
+    match button {
+        2 => (linux::RIGHT_DOWN, linux::RIGHT_UP),
+        3 => (linux::MIDDLE_DOWN, linux::MIDDLE_UP),
+        _ => (linux::LEFT_DOWN, linux::LEFT_UP),
+    }
+}
+
+#[inline]
+pub fn get_cursor_pos() -> (i32, i32) {
+    current_cursor_position().unwrap_or((0, 0))
 }
 
 pub fn send_clicks(
@@ -256,15 +650,6 @@ pub fn send_clicks(
         ) {
             return;
         }
-    }
-}
-
-#[inline]
-pub fn get_button_flags(button: i32) -> (u32, u32) {
-    match button {
-        2 => (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP),
-        3 => (MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP),
-        _ => (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP),
     }
 }
 

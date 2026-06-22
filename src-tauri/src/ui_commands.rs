@@ -1,22 +1,18 @@
 use std::sync::atomic::Ordering;
-use tauri::Manager;
-
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::app_state::AppInfoPayload;
 use crate::app_state::PositionPayload;
-use crate::engine::stats::CumulativeStats;
-use crate::settings::ClickerSettings;
-use crate::ClickerState;
-use crate::ClickerStatusPayload;
-
 use crate::engine::mouse::current_cursor_position;
+use crate::engine::stats::CumulativeStats;
 use crate::engine::worker::current_status;
 use crate::engine::worker::emit_status;
-use crate::engine::worker::now_epoch_ms;
 use crate::engine::worker::start_clicker_inner;
 use crate::engine::worker::stop_clicker_inner;
 use crate::hotkeys::register_hotkey_inner;
+use crate::settings::ClickerSettings;
+use crate::ClickerState;
+use crate::ClickerStatusPayload;
 
 #[tauri::command]
 pub fn get_text_scale_factor() -> f64 {
@@ -36,6 +32,7 @@ pub fn get_text_scale_factor() -> f64 {
 
     1.0
 }
+
 #[tauri::command]
 pub fn set_webview_zoom(window: tauri::Window, factor: f64) -> Result<(), String> {
     window
@@ -43,6 +40,11 @@ pub fn set_webview_zoom(window: tauri::Window, factor: f64) -> Result<(), String
         .ok_or("webview not found".to_string())?
         .set_zoom(factor)
         .map_err(|e: tauri::Error| e.to_string())
+}
+
+#[tauri::command]
+pub fn set_always_on_top_linux(_window: tauri::Window, _enabled: bool) -> Result<(), String> {
+    Ok(())
 }
 
 #[tauri::command]
@@ -99,7 +101,7 @@ pub fn update_settings(
 
     if !was_initialized {
         state.settings_initialized.store(true, Ordering::SeqCst);
-        log::info!("[Settings] First update_settings — initialized, skipping overlay");
+        log::info!("[Settings] First update_settings - initialized, skipping overlay");
         return Ok(settings);
     }
 
@@ -147,9 +149,10 @@ pub fn set_hotkey_capture_active(app: AppHandle, active: bool) -> Result<(), Str
     state.hotkey_capture_active.store(active, Ordering::SeqCst);
 
     if active {
-        state
-            .suppress_hotkey_until_ms
-            .store(now_epoch_ms().saturating_add(250), Ordering::SeqCst);
+        state.suppress_hotkey_until_ms.store(
+            crate::engine::worker::now_epoch_ms().saturating_add(250),
+            Ordering::SeqCst,
+        );
     } else {
         state
             .suppress_hotkey_until_release
@@ -166,28 +169,6 @@ pub fn pick_position() -> Result<PositionPayload, String> {
     let (x, y) =
         current_cursor_position().ok_or_else(|| String::from("Failed to read cursor position"))?;
     Ok(PositionPayload { x, y })
-}
-
-#[tauri::command]
-pub fn start_sequence_point_pick(app: AppHandle) -> Result<(), String> {
-    crate::sequence_picker::start_sequence_point_pick_inner(app)
-}
-
-#[tauri::command]
-pub fn cancel_sequence_point_pick(app: AppHandle) -> Result<(), String> {
-    crate::sequence_picker::cancel_sequence_point_pick_inner(&app);
-    Ok(())
-}
-
-#[tauri::command]
-pub fn start_custom_stop_zone_pick(app: AppHandle) -> Result<(), String> {
-    crate::custom_stop_zone_picker::start_custom_stop_zone_pick_inner(app)
-}
-
-#[tauri::command]
-pub fn cancel_custom_stop_zone_pick(app: AppHandle) -> Result<(), String> {
-    crate::custom_stop_zone_picker::cancel_custom_stop_zone_pick_inner(&app);
-    Ok(())
 }
 
 #[tauri::command]
@@ -211,18 +192,7 @@ pub fn reset_stats() -> Result<CumulativeStats, String> {
 }
 
 #[tauri::command]
-pub fn get_autostart_enabled() -> bool {
-    crate::autostart::get_autostart_enabled()
-}
-
-#[tauri::command]
-pub fn set_autostart_enabled(enabled: bool) -> Result<(), String> {
-    crate::autostart::set_autostart_enabled(enabled).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
 pub fn hide_main_window(app: AppHandle) -> Result<(), String> {
-    crate::window_lifecycle::on_hide(&app);
     if let Some(window) = app.get_webview_window("main") {
         window.hide().map_err(|e| e.to_string())?;
     }
@@ -235,7 +205,6 @@ pub fn quit_app(app: AppHandle) {
     app.exit(0);
 }
 
-#[tauri::command]
-pub fn list_processes() -> Result<Vec<crate::engine::process::ProcessInfo>, String> {
-    Ok(crate::engine::process::list_running_processes())
+pub fn notify_settings_changed(app: &AppHandle) {
+    let _ = app.emit("settings-changed", ());
 }

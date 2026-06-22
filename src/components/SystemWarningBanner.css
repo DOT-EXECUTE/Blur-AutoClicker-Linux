@@ -1,0 +1,46 @@
+.system-warning-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  background: rgba(220, 38, 38, 0.9);
+  color: #ffffff;
+  font-size: 13px;
+  line-height: 1.4;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.15);
+  flex-shrink: 0;
+}
+
+.system-warning-message {
+  flex: 1 1 auto;
+  word-break: break-word;
+}
+
+.system-warning-dismiss {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  margin: 0;
+  background: rgba(255, 255, 255, 0.2);
+  color: #ffffff;
+  border: none;
+  border-radius: 4px;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.system-warning-dismiss:hover {
+  background: rgba(255, 255, 255, 0.35);
+}
+
+.system-warning-dismiss:focus-visible {
+  outline: 2px solid #ffffff;
+  outline-offset: 2px;
+}

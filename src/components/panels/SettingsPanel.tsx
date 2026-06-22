@@ -284,9 +284,6 @@ export default function SettingsPanel({
   const [stats, setStats] = useState<CumulativeStats | null>(null);
   const [atBottom, setAtBottom] = useState(false);
   const [presetsAtBottom, setPresetsAtBottom] = useState(true);
-  const [autostartEnabled, setAutostartEnabled] = useState<boolean | null>(
-    null,
-  );
   const [newPresetName, setNewPresetName] = useState("");
   const [editingPresetId, setEditingPresetId] = useState<PresetId | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
@@ -302,9 +299,6 @@ export default function SettingsPanel({
     invoke<CumulativeStats>("get_stats")
       .then(setStats)
       .catch(() => { });
-    invoke<boolean>("get_autostart_enabled")
-      .then(setAutostartEnabled)
-      .catch(() => setAutostartEnabled(false));
   }, []);
 
   useEffect(() => {
@@ -425,7 +419,6 @@ export default function SettingsPanel({
     setResetting(true);
     try {
       await onReset();
-      setAutostartEnabled(false);
     } finally {
       setResetting(false);
       setPendingAction(null);
@@ -877,30 +870,6 @@ export default function SettingsPanel({
           <div className="settings-row">
             <div className="settings-label-group">
               <span className="settings-label">
-                Stop on Task Switcher
-              </span>
-              <span className="settings-sublabel">
-                Stop clicking when switching to another window.
-              </span>
-            </div>
-            <div className="settings-seg-group">
-              {onOffOptions.map((option) => (
-                <button
-                  key={String(option.value)}
-                  className={`settings-seg-btn ${settings.taskSwitcherStopEnabled === option.value ? "active" : ""}`}
-                  onClick={() =>
-                    update({ taskSwitcherStopEnabled: option.value })
-                  }
-                >
-                  {option.label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="settings-row">
-            <div className="settings-label-group">
-              <span className="settings-label">
                 Extended Click Speed Limit
               </span>
               <span className="settings-sublabel">
@@ -949,32 +918,6 @@ export default function SettingsPanel({
             </div>
           </div>
 
-          <div className="settings-row">
-            <div className="settings-label-group">
-              <span className="settings-label">
-                Run on Startup
-              </span>
-              <span className="settings-sublabel">
-                Start clicking when the app opens.
-              </span>
-            </div>
-            <div className="settings-seg-group">
-              {onOffOptions.map((option) => (
-                <button
-                  key={String(option.value)}
-                  className={`settings-seg-btn ${autostartEnabled === option.value ? "active" : ""}`}
-                  disabled={autostartEnabled === null}
-                  onClick={() => {
-                    invoke("set_autostart_enabled", { enabled: option.value })
-                      .then(() => setAutostartEnabled(option.value))
-                      .catch(console.error);
-                  }}
-                >
-                  {option.label}
-                </button>
-              ))}
-            </div>
-          </div>
         </SettingsCard>
 
         <SettingsCard

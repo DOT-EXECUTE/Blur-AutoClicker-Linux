@@ -69,8 +69,6 @@ const STOP_REASON_TEXTS: Record<string, string> = {
   "Right edge failsafe": "Right edge failsafe",
   "Bottom edge failsafe": "Bottom edge failsafe",
   "Left edge failsafe": "Left edge failsafe",
-  "Blocked by task switcher": "Blocked by task switcher",
-  "Blocked by process list": "Blocked by process list",
 };
 
 function translateStopReason(stopReason: string | null | undefined): string {
@@ -132,26 +130,6 @@ const TAB_ITEMS: readonly TabItem[] = [
         <path d="m12 3 9 4.5-9 4.5-9-4.5L12 3z" />
         <path d="m3 12.5 9 4.5 9-4.5" />
         <path d="m3 17.5 9 4.5 9-4.5" />
-      </svg>
-    ),
-  },
-  {
-    value: "zones",
-    label: "Zones",
-    color: "hsl(208 85% 58%)",
-    icon: ({ active }) => (
-      <svg
-        width="18"
-        height="18"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth={active ? "2.2" : "2"}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        aria-hidden="true"
-      >
-        <circle cx="12" cy="12" r="8" />
       </svg>
     ),
   },

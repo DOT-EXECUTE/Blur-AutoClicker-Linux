@@ -4,16 +4,15 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  release:
-    name: Build and release
-    runs-on: windows-latest
-    timeout-minutes: 30
-
+  build-linux:
+    name: Build Linux Packages
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -23,60 +22,59 @@ jobs:
           cache: npm
 
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-pc-windows-msvc
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: './src-tauri -> target'
+          workdir: src-tauri
 
-      - name: Install dependencies
+      - name: Install system dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            libssl-dev \
+            build-essential \
+            dpkg-dev \
+            rpm
+
+      - name: Install tauri-cli
+        run: cargo install tauri-cli --version "^2" --locked
+
+      - name: Install frontend dependencies
         run: npm install
 
-      - name: Extract changelog
-        shell: pwsh
-        run: |
-          $version = [regex]::Escape(("${{ github.ref_name }}".TrimStart('v')))
-          $content = Get-Content CHANGELOG.md -Raw
-          $pattern = "(?ms)# v$version .*?(?=\n# v|\z)"
-          $match = [regex]::Match($content, $pattern)
-          if ($match.Success) {
-            Set-Content -Path release_body.md -Value $match.Value.Trim()
-          }
-
-      - name: Build
-        uses: tauri-apps/tauri-action@v0
+      - name: Build packages
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: ./scripts/build-packages.sh
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: BlurAutoClicker ${{ github.ref_name }}
-          releaseBody: See CHANGELOG.md for details.
-          releaseDraft: true
+          name: linux-packages
+          path: packages/*
 
-      - name: Update release body from changelog
-        shell: pwsh
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          if (Test-Path release_body.md) {
-            gh release edit "${{ github.ref_name }}" --notes-file release_body.md
-          }
+  publish:
+    name: Publish Release
+    needs: build-linux
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
 
-      - name: Create portable zip
-        shell: pwsh
-        run: |
-          $exe = Get-ChildItem -Path "src-tauri/target/release" -Filter "BlurAutoClicker.exe" | Select-Object -First 1
-          if (-not $exe) { Write-Error "BlurAutoClicker.exe not found"; exit 1 }
-          $tag = "${{ github.ref_name }}"
-          $zipName = "BlurAutoClicker-${tag}-portable.zip"
-          Compress-Archive -Path $exe.FullName -DestinationPath $zipName
-          Add-Content -Path $env:GITHUB_ENV -Value "ZIP_PATH=$zipName"
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-packages
+          path: packages
 
-      - name: Upload portable zip to release
-        shell: pwsh
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release upload "${{ github.ref_name }}" "$env:ZIP_PATH" --clobber
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: packages/*
+          body_path: RELEASE_MESSAGE.md
+          draft: true
+          generate_release_notes: true

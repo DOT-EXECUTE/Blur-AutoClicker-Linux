@@ -6,13 +6,17 @@ use crate::engine::worker::toggle_clicker_inner;
 use crate::engine::AUTOCLICKER_EXTRA_INFO;
 use crate::AppHandle;
 use crate::ClickerState;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::OnceLock;
 use std::time::Duration;
 use std::time::Instant;
 use tauri::Manager;
+
+#[cfg(target_os = "windows")]
 use windows_sys::Win32::Foundation::LRESULT;
+#[cfg(target_os = "windows")]
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
+#[cfg(target_os = "windows")]
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, PeekMessageW, SetWindowsHookExW, UnhookWindowsHookEx, KBDLLHOOKSTRUCT, MSG,
     MSLLHOOKSTRUCT, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP,
@@ -20,10 +24,79 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     WM_XBUTTONDOWN, WM_XBUTTONUP,
 };
 
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+mod vk_compat {
+    pub const VK_LBUTTON: i32 = 0x01;
+    pub const VK_RBUTTON: i32 = 0x02;
+    pub const VK_MBUTTON: i32 = 0x04;
+    pub const VK_XBUTTON1: i32 = 0x05;
+    pub const VK_XBUTTON2: i32 = 0x06;
+    pub const VK_BACK: i32 = 0x08;
+    pub const VK_TAB: i32 = 0x09;
+    pub const VK_RETURN: i32 = 0x0D;
+    pub const VK_ESCAPE: i32 = 0x1B;
+    pub const VK_SPACE: i32 = 0x20;
+    pub const VK_PRIOR: i32 = 0x21;
+    pub const VK_NEXT: i32 = 0x22;
+    pub const VK_END: i32 = 0x23;
+    pub const VK_HOME: i32 = 0x24;
+    pub const VK_LEFT: i32 = 0x25;
+    pub const VK_UP: i32 = 0x26;
+    pub const VK_RIGHT: i32 = 0x27;
+    pub const VK_DOWN: i32 = 0x28;
+    pub const VK_INSERT: i32 = 0x2D;
+    pub const VK_DELETE: i32 = 0x2E;
+    pub const VK_LWIN: i32 = 0x5B;
+    pub const VK_RWIN: i32 = 0x5C;
+    pub const VK_NUMPAD0: i32 = 0x60;
+    pub const VK_NUMPAD1: i32 = 0x61;
+    pub const VK_NUMPAD2: i32 = 0x62;
+    pub const VK_NUMPAD3: i32 = 0x63;
+    pub const VK_NUMPAD4: i32 = 0x64;
+    pub const VK_NUMPAD5: i32 = 0x65;
+    pub const VK_NUMPAD6: i32 = 0x66;
+    pub const VK_NUMPAD7: i32 = 0x67;
+    pub const VK_NUMPAD8: i32 = 0x68;
+    pub const VK_NUMPAD9: i32 = 0x69;
+    pub const VK_MULTIPLY: i32 = 0x6A;
+    pub const VK_ADD: i32 = 0x6B;
+    pub const VK_SUBTRACT: i32 = 0x6D;
+    pub const VK_DECIMAL: i32 = 0x6E;
+    pub const VK_DIVIDE: i32 = 0x6F;
+    pub const VK_F1: i32 = 0x70;
+    pub const VK_OEM_1: i32 = 0xBA;
+    pub const VK_OEM_PLUS: i32 = 0xBB;
+    pub const VK_OEM_COMMA: i32 = 0xBC;
+    pub const VK_OEM_MINUS: i32 = 0xBD;
+    pub const VK_OEM_PERIOD: i32 = 0xBE;
+    pub const VK_OEM_2: i32 = 0xBF;
+    pub const VK_OEM_3: i32 = 0xC0;
+    pub const VK_OEM_4: i32 = 0xDB;
+    pub const VK_OEM_5: i32 = 0xDC;
+    pub const VK_OEM_6: i32 = 0xDD;
+    pub const VK_OEM_7: i32 = 0xDE;
+    pub const VK_OEM_102: i32 = 0xE2;
+}
+
+#[cfg(target_os = "linux")]
+use vk_compat::*;
+
 const PM_REMOVE: u32 = 0x0001;
 const PM_NOREMOVE: u32 = 0x0000;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(4);
+
+pub const VK_SCROLL_UP_PSEUDO: i32 = -1;
+pub const VK_SCROLL_DOWN_PSEUDO: i32 = -2;
+pub const VK_NUMPAD_ENTER_PSEUDO: i32 = -3;
+
+static SCROLL_UP_AT: AtomicU64 = AtomicU64::new(0);
+static SCROLL_DOWN_AT: AtomicU64 = AtomicU64::new(0);
+#[allow(dead_code)]
+static NUMPAD_ENTER_DOWN: AtomicBool = AtomicBool::new(false);
+
+const SCROLL_WINDOW_MS: u64 = 200;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HotkeyBinding {
@@ -170,14 +243,18 @@ pub fn format_hotkey_binding(binding: &HotkeyBinding) -> String {
     parts.join("+")
 }
 
+#[cfg(target_os = "windows")]
 static PHYSICAL_KEY_STATE: OnceLock<&'static [AtomicBool; 256]> = OnceLock::new();
+#[cfg(target_os = "windows")]
 static HOOKS_ACTIVE: AtomicBool = AtomicBool::new(false);
 
+#[cfg(target_os = "windows")]
 fn physical_key_state() -> &'static [AtomicBool; 256] {
     PHYSICAL_KEY_STATE
         .get_or_init(|| Box::leak(Box::new(std::array::from_fn(|_| AtomicBool::new(false)))))
 }
 
+#[cfg(target_os = "windows")]
 fn is_physical_vk_down(vk: i32) -> bool {
     if !(0..256).contains(&vk) {
         return false;
@@ -185,6 +262,7 @@ fn is_physical_vk_down(vk: i32) -> bool {
     physical_key_state()[vk as usize].load(Ordering::Relaxed)
 }
 
+#[cfg(target_os = "windows")]
 unsafe extern "system" fn mouse_ll_proc(n_code: i32, w_param: usize, l_param: isize) -> LRESULT {
     if n_code >= 0 {
         let mhs = &*(l_param as *const MSLLHOOKSTRUCT);
@@ -222,6 +300,7 @@ unsafe extern "system" fn mouse_ll_proc(n_code: i32, w_param: usize, l_param: is
     CallNextHookEx(std::ptr::null_mut(), n_code, w_param, l_param)
 }
 
+#[cfg(target_os = "windows")]
 unsafe extern "system" fn keyboard_ll_proc(n_code: i32, w_param: usize, l_param: isize) -> LRESULT {
     if n_code >= 0 {
         let khs = &*(l_param as *const KBDLLHOOKSTRUCT);
@@ -236,6 +315,7 @@ unsafe extern "system" fn keyboard_ll_proc(n_code: i32, w_param: usize, l_param:
     CallNextHookEx(std::ptr::null_mut(), n_code, w_param, l_param)
 }
 
+#[cfg(target_os = "windows")]
 pub fn start_hotkey_listener(app: AppHandle) {
     std::thread::spawn(move || unsafe {
         let mouse_hook =
@@ -365,6 +445,7 @@ pub fn start_hotkey_listener(app: AppHandle) {
     });
 }
 
+#[cfg(target_os = "windows")]
 fn is_hotkey_binding_pressed_physical(binding: &HotkeyBinding, strict: bool) -> bool {
     let ctrl_down =
         is_physical_vk_down(VK_LCONTROL as i32) || is_physical_vk_down(VK_RCONTROL as i32);
@@ -404,16 +485,23 @@ pub fn handle_hotkey_released(app: &AppHandle) {
 }
 
 pub fn is_hotkey_binding_pressed(binding: &HotkeyBinding, strict: bool) -> bool {
-    let ctrl_down = is_vk_down(VK_CONTROL as i32);
-    let alt_down = is_vk_down(VK_MENU as i32);
-    let shift_down = is_vk_down(VK_SHIFT as i32);
-    let super_down = is_vk_down(VK_LWIN as i32) || is_vk_down(VK_RWIN as i32);
+    #[cfg(target_os = "windows")]
+    {
+        let ctrl_down = is_vk_down(VK_CONTROL as i32);
+        let alt_down = is_vk_down(VK_MENU as i32);
+        let shift_down = is_vk_down(VK_SHIFT as i32);
+        let super_down = is_vk_down(VK_LWIN as i32) || is_vk_down(VK_RWIN as i32);
 
-    if !modifiers_match(binding, ctrl_down, alt_down, shift_down, super_down, strict) {
-        return false;
+        if !modifiers_match(binding, ctrl_down, alt_down, shift_down, super_down, strict) {
+            return false;
+        }
+
+        is_main_key_active_windows(binding.main_vk)
     }
-
-    is_vk_down(binding.main_vk)
+    #[cfg(target_os = "linux")]
+    {
+        linux_hotkeys::is_binding_pressed(binding, strict)
+    }
 }
 
 fn modifiers_match(
@@ -455,6 +543,29 @@ fn modifiers_match(
     true
 }
 
+#[cfg(target_os = "windows")]
+fn is_main_key_active_windows(vk: i32) -> bool {
+    match vk {
+        VK_SCROLL_UP_PSEUDO => {
+            let ts = SCROLL_UP_AT.load(Ordering::SeqCst);
+            if ts == 0 {
+                return false;
+            }
+            now_epoch_ms().saturating_sub(ts) < SCROLL_WINDOW_MS
+        }
+        VK_SCROLL_DOWN_PSEUDO => {
+            let ts = SCROLL_DOWN_AT.load(Ordering::SeqCst);
+            if ts == 0 {
+                return false;
+            }
+            now_epoch_ms().saturating_sub(ts) < SCROLL_WINDOW_MS
+        }
+        VK_NUMPAD_ENTER_PSEUDO => NUMPAD_ENTER_DOWN.load(Ordering::SeqCst),
+        _ => is_vk_down(vk),
+    }
+}
+
+#[cfg(target_os = "windows")]
 pub fn is_vk_down(vk: i32) -> bool {
     unsafe { (GetAsyncKeyState(vk) as u16 & 0x8000) != 0 }
 }
@@ -530,6 +641,8 @@ fn parse_mouse_button_token(token: &str) -> Option<(i32, String)> {
         "mouse5" | "xbutton2" | "mouseforward" | "browserforward" | "forwardbutton" => {
             Some(binding(VK_XBUTTON2 as i32, "mouse5"))
         }
+        "scrollup" | "wheelup" => Some(binding(VK_SCROLL_UP_PSEUDO, "scrollup")),
+        "scrolldown" | "wheeldown" => Some(binding(VK_SCROLL_DOWN_PSEUDO, "scrolldown")),
         _ => None,
     }
 }
@@ -561,6 +674,7 @@ fn parse_numpad_token(token: &str) -> Option<(i32, String)> {
         "numpaddecimal" | "numdecimal" | "numdot" | "numdel" | "numpadpoint" => {
             Some(binding(VK_DECIMAL as i32, "numpaddecimal"))
         }
+        "numpadenter" | "numpadreturn" => Some(binding(VK_NUMPAD_ENTER_PSEUDO, "numpadenter")),
         _ => None,
     }
 }
@@ -577,6 +691,580 @@ fn parse_function_key_token(token: &str) -> Option<(i32, String)> {
     };
 
     Some(binding(vk, token))
+}
+
+#[cfg(target_os = "windows")]
+pub fn start_scroll_hook() {
+    std::thread::spawn(|| unsafe {
+        let mouse_hook = SetWindowsHookExW(
+            WH_MOUSE_LL,
+            Some(scroll_mouse_ll_proc),
+            std::ptr::null_mut(),
+            0,
+        );
+        if mouse_hook.is_null() {
+            log::error!("[Hotkeys] Failed to install WH_MOUSE_LL hook");
+        }
+
+        let keyboard_hook = SetWindowsHookExW(
+            WH_KEYBOARD_LL,
+            Some(scroll_keyboard_ll_proc),
+            std::ptr::null_mut(),
+            0,
+        );
+        if keyboard_hook.is_null() {
+            log::error!("[Hotkeys] Failed to install WH_KEYBOARD_LL hook");
+        }
+
+        if mouse_hook.is_null() && keyboard_hook.is_null() {
+            return;
+        }
+
+        let mut msg: MSG = std::mem::zeroed();
+        while PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) != 0 {
+            if msg.message == WM_QUIT {
+                break;
+            }
+        }
+    });
+}
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn scroll_keyboard_ll_proc(
+    n_code: i32,
+    w_param: usize,
+    l_param: isize,
+) -> LRESULT {
+    if n_code >= 0 {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            KBDLLHOOKSTRUCT, LLKHF_EXTENDED, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
+        };
+        let info = &*(l_param as *const KBDLLHOOKSTRUCT);
+        if info.vkCode as i32 == VK_RETURN as i32 && (info.flags & LLKHF_EXTENDED) != 0 {
+            match w_param as u32 {
+                WM_KEYDOWN | WM_SYSKEYDOWN => {
+                    NUMPAD_ENTER_DOWN.store(true, Ordering::SeqCst);
+                }
+                WM_KEYUP | WM_SYSKEYUP => {
+                    NUMPAD_ENTER_DOWN.store(false, Ordering::SeqCst);
+                }
+                _ => {}
+            }
+        }
+    }
+    CallNextHookEx(std::ptr::null_mut(), n_code, w_param, l_param)
+}
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn scroll_mouse_ll_proc(
+    n_code: i32,
+    w_param: usize,
+    l_param: isize,
+) -> LRESULT {
+    use windows_sys::Win32::UI::WindowsAndMessaging::WM_MOUSEWHEEL;
+    if n_code >= 0 && w_param == WM_MOUSEWHEEL as usize {
+        #[repr(C)]
+        struct MsllHookStruct {
+            pt_x: i32,
+            pt_y: i32,
+            mouse_data: u32,
+            flags: u32,
+            time: u32,
+            extra_info: usize,
+        }
+        let info = &*(l_param as *const MsllHookStruct);
+        let delta = (info.mouse_data >> 16) as i16;
+        let now = now_epoch_ms();
+        if delta > 0 {
+            SCROLL_UP_AT.store(now, Ordering::SeqCst);
+        } else if delta < 0 {
+            SCROLL_DOWN_AT.store(now, Ordering::SeqCst);
+        }
+    }
+    CallNextHookEx(std::ptr::null_mut(), n_code, w_param, l_param)
+}
+
+#[cfg(target_os = "linux")]
+pub fn start_scroll_hook() {
+    linux_hotkeys::start_evdev_scroll_thread();
+}
+
+#[cfg(target_os = "linux")]
+pub fn start_hotkey_listener(app: AppHandle) {
+    linux_hotkeys::start_evdev_hotkey_thread(app);
+}
+
+#[cfg(target_os = "linux")]
+mod linux_hotkeys {
+    use super::{
+        handle_hotkey_pressed, handle_hotkey_released, now_epoch_ms, HotkeyBinding, SCROLL_DOWN_AT,
+        SCROLL_UP_AT, SCROLL_WINDOW_MS,
+    };
+    use crate::AppHandle;
+    use crate::ClickerState;
+    use evdev::{Key, RelativeAxisType};
+    use std::sync::{OnceLock, RwLock};
+    use std::time::Duration;
+    use tauri::Manager;
+
+    static PRESSED_KEYS: OnceLock<RwLock<std::collections::HashSet<Key>>> = OnceLock::new();
+
+    fn pressed_keys() -> &'static RwLock<std::collections::HashSet<Key>> {
+        PRESSED_KEYS.get_or_init(|| RwLock::new(std::collections::HashSet::new()))
+    }
+
+    fn set_nonblock(dev: &evdev::Device) {
+        use std::os::unix::io::AsRawFd;
+        unsafe {
+            libc::fcntl(dev.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK);
+        }
+    }
+
+    fn open_evdev_devices() -> (Vec<evdev::Device>, Vec<evdev::Device>) {
+        let mut kbd_devs: Vec<evdev::Device> = Vec::new();
+        let mut mouse_devs: Vec<evdev::Device> = Vec::new();
+        let mut open_errors: Vec<(std::path::PathBuf, std::io::Error)> = Vec::new();
+
+        for (path, _) in evdev::enumerate() {
+            match evdev::Device::open(&path) {
+                Ok(dev) => {
+                    let has_keys = dev
+                        .supported_keys()
+                        .map(|k| k.contains(Key::KEY_A))
+                        .unwrap_or(false);
+                    let has_wheel = dev
+                        .supported_relative_axes()
+                        .map(|a| a.contains(RelativeAxisType::REL_WHEEL))
+                        .unwrap_or(false);
+
+                    if has_keys {
+                        set_nonblock(&dev);
+                        kbd_devs.push(dev);
+                    } else if has_wheel {
+                        set_nonblock(&dev);
+                        mouse_devs.push(dev);
+                    }
+                }
+                Err(e) => {
+                    open_errors.push((path, e));
+                }
+            }
+        }
+
+        if kbd_devs.is_empty() && mouse_devs.is_empty() {
+            if open_errors
+                .iter()
+                .any(|(_, e)| e.kind() == std::io::ErrorKind::PermissionDenied)
+            {
+                log::error!("[hotkeys] No evdev devices accessible. Make sure your user is in the 'input' group (sudo usermod -aG input $USER) and log out/back in.");
+            } else {
+                log::warn!("[hotkeys] No keyboard or mouse evdev devices found.");
+            }
+        } else {
+            log::info!(
+                "[hotkeys] Opened {} keyboard and {} mouse evdev devices.",
+                kbd_devs.len(),
+                mouse_devs.len()
+            );
+        }
+
+        (kbd_devs, mouse_devs)
+    }
+
+    pub fn start_evdev_scroll_thread() {
+        std::thread::spawn(|| {
+            let (mut kbd_devs, mut mouse_devs) = open_evdev_devices();
+
+            loop {
+                for dev in &mut kbd_devs {
+                    match dev.fetch_events() {
+                        Ok(events) => {
+                            if let Ok(mut keys) = pressed_keys().write() {
+                                for ev in events {
+                                    if let evdev::InputEventKind::Key(key) = ev.kind() {
+                                        match ev.value() {
+                                            1 | 2 => {
+                                                keys.insert(key);
+                                            }
+                                            0 => {
+                                                keys.remove(&key);
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                        Err(_) => {}
+                    }
+                }
+
+                for dev in &mut mouse_devs {
+                    match dev.fetch_events() {
+                        Ok(events) => {
+                            for ev in events {
+                                match ev.kind() {
+                                    evdev::InputEventKind::RelAxis(rel)
+                                        if rel == RelativeAxisType::REL_WHEEL =>
+                                    {
+                                        let now = now_epoch_ms();
+                                        if ev.value() > 0 {
+                                            SCROLL_UP_AT
+                                                .store(now, std::sync::atomic::Ordering::SeqCst);
+                                        } else if ev.value() < 0 {
+                                            SCROLL_DOWN_AT
+                                                .store(now, std::sync::atomic::Ordering::SeqCst);
+                                        }
+                                    }
+                                    evdev::InputEventKind::Key(key) => {
+                                        if let Ok(mut keys) = pressed_keys().write() {
+                                            match ev.value() {
+                                                1 | 2 => {
+                                                    keys.insert(key);
+                                                }
+                                                0 => {
+                                                    keys.remove(&key);
+                                                }
+                                                _ => {}
+                                            }
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                        Err(_) => {}
+                    }
+                }
+
+                std::thread::sleep(Duration::from_millis(4));
+            }
+        });
+    }
+
+    pub fn start_evdev_hotkey_thread(app: AppHandle) {
+        std::thread::spawn(move || {
+            let (mut kbd_devs, mut mouse_devs) = open_evdev_devices();
+            let mut was_pressed = false;
+
+            loop {
+                for dev in &mut kbd_devs {
+                    match dev.fetch_events() {
+                        Ok(events) => {
+                            if let Ok(mut keys) = pressed_keys().write() {
+                                for ev in events {
+                                    if let evdev::InputEventKind::Key(key) = ev.kind() {
+                                        match ev.value() {
+                                            1 | 2 => {
+                                                keys.insert(key);
+                                            }
+                                            0 => {
+                                                keys.remove(&key);
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                        Err(_) => {}
+                    }
+                }
+
+                for dev in &mut mouse_devs {
+                    match dev.fetch_events() {
+                        Ok(events) => {
+                            for ev in events {
+                                match ev.kind() {
+                                    evdev::InputEventKind::Key(key) => {
+                                        if let Ok(mut keys) = pressed_keys().write() {
+                                            match ev.value() {
+                                                1 | 2 => {
+                                                    keys.insert(key);
+                                                }
+                                                0 => {
+                                                    keys.remove(&key);
+                                                }
+                                                _ => {}
+                                            }
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                        Err(_) => {}
+                    }
+                }
+
+                let (binding, strict) = {
+                    let state = app.state::<ClickerState>();
+                    let binding = state.registered_hotkey.lock().unwrap().clone();
+                    let strict = state.settings.lock().unwrap().strict_hotkey_modifiers;
+                    (binding, strict)
+                };
+
+                let currently_pressed = binding
+                    .as_ref()
+                    .map(|b| is_binding_pressed(b, strict))
+                    .unwrap_or(false);
+
+                let suppress_until = app
+                    .state::<ClickerState>()
+                    .suppress_hotkey_until_ms
+                    .load(std::sync::atomic::Ordering::SeqCst);
+                let suppress_until_release = app
+                    .state::<ClickerState>()
+                    .suppress_hotkey_until_release
+                    .load(std::sync::atomic::Ordering::SeqCst);
+                let hotkey_capture_active = app
+                    .state::<ClickerState>()
+                    .hotkey_capture_active
+                    .load(std::sync::atomic::Ordering::SeqCst);
+
+                if hotkey_capture_active {
+                    was_pressed = currently_pressed;
+                    std::thread::sleep(Duration::from_millis(12));
+                    continue;
+                }
+
+                if suppress_until_release {
+                    if currently_pressed {
+                        was_pressed = true;
+                        std::thread::sleep(Duration::from_millis(12));
+                        continue;
+                    }
+                    app.state::<ClickerState>()
+                        .suppress_hotkey_until_release
+                        .store(false, std::sync::atomic::Ordering::SeqCst);
+                    was_pressed = false;
+                    std::thread::sleep(Duration::from_millis(12));
+                    continue;
+                }
+
+                if now_epoch_ms() < suppress_until {
+                    was_pressed = currently_pressed;
+                    std::thread::sleep(Duration::from_millis(12));
+                    continue;
+                }
+
+                if currently_pressed && !was_pressed {
+                    handle_hotkey_pressed(&app);
+                } else if !currently_pressed && was_pressed {
+                    handle_hotkey_released(&app);
+                }
+
+                was_pressed = currently_pressed;
+                std::thread::sleep(Duration::from_millis(12));
+            }
+        });
+    }
+
+    fn token_to_evdev_key(token: &str) -> Option<Key> {
+        if token.len() == 1 {
+            let ch = token.chars().next().unwrap();
+            return match ch.to_ascii_lowercase() {
+                'a' => Some(Key::KEY_A),
+                'b' => Some(Key::KEY_B),
+                'c' => Some(Key::KEY_C),
+                'd' => Some(Key::KEY_D),
+                'e' => Some(Key::KEY_E),
+                'f' => Some(Key::KEY_F),
+                'g' => Some(Key::KEY_G),
+                'h' => Some(Key::KEY_H),
+                'i' => Some(Key::KEY_I),
+                'j' => Some(Key::KEY_J),
+                'k' => Some(Key::KEY_K),
+                'l' => Some(Key::KEY_L),
+                'm' => Some(Key::KEY_M),
+                'n' => Some(Key::KEY_N),
+                'o' => Some(Key::KEY_O),
+                'p' => Some(Key::KEY_P),
+                'q' => Some(Key::KEY_Q),
+                'r' => Some(Key::KEY_R),
+                's' => Some(Key::KEY_S),
+                't' => Some(Key::KEY_T),
+                'u' => Some(Key::KEY_U),
+                'v' => Some(Key::KEY_V),
+                'w' => Some(Key::KEY_W),
+                'x' => Some(Key::KEY_X),
+                'y' => Some(Key::KEY_Y),
+                'z' => Some(Key::KEY_Z),
+                '0' => Some(Key::KEY_0),
+                '1' => Some(Key::KEY_1),
+                '2' => Some(Key::KEY_2),
+                '3' => Some(Key::KEY_3),
+                '4' => Some(Key::KEY_4),
+                '5' => Some(Key::KEY_5),
+                '6' => Some(Key::KEY_6),
+                '7' => Some(Key::KEY_7),
+                '8' => Some(Key::KEY_8),
+                '9' => Some(Key::KEY_9),
+                '/' => Some(Key::KEY_SLASH),
+                '\\' => Some(Key::KEY_BACKSLASH),
+                ';' => Some(Key::KEY_SEMICOLON),
+                '\'' => Some(Key::KEY_APOSTROPHE),
+                '[' => Some(Key::KEY_LEFTBRACE),
+                ']' => Some(Key::KEY_RIGHTBRACE),
+                '-' => Some(Key::KEY_MINUS),
+                '=' => Some(Key::KEY_EQUAL),
+                '`' => Some(Key::KEY_GRAVE),
+                ',' => Some(Key::KEY_COMMA),
+                '.' => Some(Key::KEY_DOT),
+                _ => None,
+            };
+        }
+
+        match token {
+            "f1" => Some(Key::KEY_F1),
+            "f2" => Some(Key::KEY_F2),
+            "f3" => Some(Key::KEY_F3),
+            "f4" => Some(Key::KEY_F4),
+            "f5" => Some(Key::KEY_F5),
+            "f6" => Some(Key::KEY_F6),
+            "f7" => Some(Key::KEY_F7),
+            "f8" => Some(Key::KEY_F8),
+            "f9" => Some(Key::KEY_F9),
+            "f10" => Some(Key::KEY_F10),
+            "f11" => Some(Key::KEY_F11),
+            "f12" => Some(Key::KEY_F12),
+            "f13" => Some(Key::KEY_F13),
+            "f14" => Some(Key::KEY_F14),
+            "f15" => Some(Key::KEY_F15),
+            "f16" => Some(Key::KEY_F16),
+            "f17" => Some(Key::KEY_F17),
+            "f18" => Some(Key::KEY_F18),
+            "f19" => Some(Key::KEY_F19),
+            "f20" => Some(Key::KEY_F20),
+            "f21" => Some(Key::KEY_F21),
+            "f22" => Some(Key::KEY_F22),
+            "f23" => Some(Key::KEY_F23),
+            "f24" => Some(Key::KEY_F24),
+            "space" => Some(Key::KEY_SPACE),
+            "tab" => Some(Key::KEY_TAB),
+            "enter" => Some(Key::KEY_ENTER),
+            "backspace" => Some(Key::KEY_BACKSPACE),
+            "delete" => Some(Key::KEY_DELETE),
+            "insert" => Some(Key::KEY_INSERT),
+            "home" => Some(Key::KEY_HOME),
+            "end" => Some(Key::KEY_END),
+            "pageup" => Some(Key::KEY_PAGEUP),
+            "pagedown" => Some(Key::KEY_PAGEDOWN),
+            "up" => Some(Key::KEY_UP),
+            "down" => Some(Key::KEY_DOWN),
+            "left" => Some(Key::KEY_LEFT),
+            "right" => Some(Key::KEY_RIGHT),
+            "escape" => Some(Key::KEY_ESC),
+            "numpad0" => Some(Key::KEY_KP0),
+            "numpad1" => Some(Key::KEY_KP1),
+            "numpad2" => Some(Key::KEY_KP2),
+            "numpad3" => Some(Key::KEY_KP3),
+            "numpad4" => Some(Key::KEY_KP4),
+            "numpad5" => Some(Key::KEY_KP5),
+            "numpad6" => Some(Key::KEY_KP6),
+            "numpad7" => Some(Key::KEY_KP7),
+            "numpad8" => Some(Key::KEY_KP8),
+            "numpad9" => Some(Key::KEY_KP9),
+            "numpadadd" => Some(Key::KEY_KPPLUS),
+            "numpadsubtract" => Some(Key::KEY_KPMINUS),
+            "numpadmultiply" => Some(Key::KEY_KPASTERISK),
+            "numpaddivide" => Some(Key::KEY_KPSLASH),
+            "numpaddecimal" => Some(Key::KEY_KPDOT),
+            "numpadenter" => Some(Key::KEY_KPENTER),
+            "intlbackslash" => Some(Key::KEY_102ND),
+            _ => None,
+        }
+    }
+
+    fn is_evdev_key_pressed(key: Key) -> bool {
+        pressed_keys()
+            .read()
+            .map(|keys| keys.contains(&key))
+            .unwrap_or(false)
+    }
+
+    fn modifiers_ok(binding: &HotkeyBinding, strict: bool) -> bool {
+        let keys = match pressed_keys().read() {
+            Ok(k) => k,
+            Err(_) => return false,
+        };
+        let ctrl_down = keys.contains(&Key::KEY_LEFTCTRL) || keys.contains(&Key::KEY_RIGHTCTRL);
+        let alt_down = keys.contains(&Key::KEY_LEFTALT) || keys.contains(&Key::KEY_RIGHTALT);
+        let shift_down = keys.contains(&Key::KEY_LEFTSHIFT) || keys.contains(&Key::KEY_RIGHTSHIFT);
+        let super_down = keys.contains(&Key::KEY_LEFTMETA) || keys.contains(&Key::KEY_RIGHTMETA);
+
+        if binding.ctrl && !ctrl_down {
+            return false;
+        }
+        if binding.alt && !alt_down {
+            return false;
+        }
+        if binding.shift && !shift_down {
+            return false;
+        }
+        if binding.super_key && !super_down {
+            return false;
+        }
+
+        if strict {
+            if ctrl_down && !binding.ctrl {
+                return false;
+            }
+            if alt_down && !binding.alt {
+                return false;
+            }
+            if shift_down && !binding.shift {
+                return false;
+            }
+            if super_down && !binding.super_key {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    pub fn is_binding_pressed(binding: &HotkeyBinding, strict: bool) -> bool {
+        if !modifiers_ok(binding, strict) {
+            return false;
+        }
+
+        let token = binding.key_token.as_str();
+
+        match binding.main_vk {
+            super::VK_SCROLL_UP_PSEUDO => {
+                let ts = SCROLL_UP_AT.load(std::sync::atomic::Ordering::SeqCst);
+                return ts != 0 && now_epoch_ms().saturating_sub(ts) < SCROLL_WINDOW_MS;
+            }
+            super::VK_SCROLL_DOWN_PSEUDO => {
+                let ts = SCROLL_DOWN_AT.load(std::sync::atomic::Ordering::SeqCst);
+                return ts != 0 && now_epoch_ms().saturating_sub(ts) < SCROLL_WINDOW_MS;
+            }
+            super::VK_NUMPAD_ENTER_PSEUDO => {
+                return is_evdev_key_pressed(Key::KEY_KPENTER);
+            }
+            _ => {}
+        }
+
+        match token {
+            "mouseleft" => return is_evdev_key_pressed(Key::BTN_LEFT),
+            "mouseright" => return is_evdev_key_pressed(Key::BTN_RIGHT),
+            "mousemiddle" => return is_evdev_key_pressed(Key::BTN_MIDDLE),
+            "mouse4" => return is_evdev_key_pressed(Key::BTN_SIDE),
+            "mouse5" => return is_evdev_key_pressed(Key::BTN_EXTRA),
+            _ => {}
+        }
+
+        if let Some(key) = token_to_evdev_key(token) {
+            return is_evdev_key_pressed(key);
+        }
+
+        false
+    }
 }
 
 #[cfg(test)]
@@ -601,6 +1289,7 @@ mod tests {
             "numpadmultiply",
             "numpaddivide",
             "numpaddecimal",
+            "numpadenter",
         ] {
             let hotkey = format!("ctrl+shift+{token}");
             let binding = parse_hotkey_binding(&hotkey).expect("token should parse");

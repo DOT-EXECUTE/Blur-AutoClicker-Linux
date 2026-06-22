@@ -10,82 +10,22 @@ use crate::ClickerSettings;
 use crate::ClickerState;
 use crate::ClickerStatusPayload;
 use crate::STATUS_EVENT;
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetDoubleClickTime;
 
 use super::cycle::ClickCyclePlan;
 use super::failsafe::should_stop_for_failsafe;
-use super::keyboard::{is_alphabetic_vk, send_key_presses};
+use super::keyboard::{is_alphabetic_vk, send_key_presses_cross_platform};
 use super::mouse::{
     get_button_flags, get_cursor_pos, move_mouse, send_clicks, smooth_move, VirtualScreenRect,
 };
-use super::process;
 use super::rng::SmallRng;
 use super::ClickerConfig;
-use super::NtSetTimerResolution;
 use super::RunOutcome;
 use super::SequenceTarget;
 use super::CLICK_COUNT;
 
-// -- CPU measurement --
-// changed from normal cpu measurement because it was not accurately
-// showing cpu usage for short clicker run times.
-
-windows_targets::link!(
-    "kernel32.dll" "system" fn QueryThreadCycleTime(thread: *mut core::ffi::c_void, cycles: *mut u64) -> i32
-);
-windows_targets::link!(
-    "kernel32.dll" "system" fn GetCurrentThread() -> *mut core::ffi::c_void
-);
-
-#[inline]
-fn thread_cycles() -> u64 {
-    let mut cycles: u64 = 0;
-    unsafe {
-        QueryThreadCycleTime(GetCurrentThread(), &mut cycles);
-    }
-    cycles
-}
-
 impl ClickerConfig {
     pub fn use_sequence(&self) -> bool {
         self.sequence_enabled && !self.sequence_points.is_empty()
-    }
-}
-
-fn calibrate_cycle_freq() -> f64 {
-    let start_cycles = thread_cycles();
-    let start = Instant::now();
-
-    while start.elapsed().as_millis() < 5 {
-        std::hint::spin_loop();
-    }
-
-    let cycle_delta = thread_cycles().saturating_sub(start_cycles);
-    let wall_secs = start.elapsed().as_secs_f64();
-
-    if wall_secs > 0.0 && cycle_delta > 0 {
-        let freq = cycle_delta as f64 / wall_secs;
-        log::info!("CPU: calibrated at {:.0} MHz", freq / 1_000_000.0);
-        freq
-    } else {
-        3_000_000_000.0 // fallback 3 GHz
-    }
-}
-
-struct TimerResolutionGuard;
-
-impl TimerResolutionGuard {
-    fn new() -> Self {
-        let mut current = 0u32;
-        unsafe { NtSetTimerResolution(10000, 1, &mut current) };
-        Self
-    }
-}
-
-impl Drop for TimerResolutionGuard {
-    fn drop(&mut self) {
-        let mut current = 0u32;
-        unsafe { NtSetTimerResolution(10000, 0, &mut current) };
     }
 }
 
@@ -154,15 +94,7 @@ pub fn start_clicker_inner(app: &AppHandle) -> Result<ClickerStatusPayload, Stri
         }
     }
 
-    if config.process_list_enabled
-        && config.process_list_mode == crate::engine::ProcessListMode::Whitelist
-        && config.process_list_entries.is_empty()
-    {
-        *state.warning.lock().unwrap() =
-            Some(String::from("Whitelist mode has no entries selected"));
-    } else {
-        *state.warning.lock().unwrap() = None;
-    }
+    *state.warning.lock().unwrap() = None;
 
     if config.use_sequence() {
         state.active_sequence_index.store(0, Ordering::SeqCst);
@@ -243,8 +175,7 @@ fn interval_secs_from_settings(settings: &ClickerSettings) -> Result<f64, String
 }
 
 fn system_double_click_gap_ms() -> u32 {
-    let system_timeout_ms = unsafe { GetDoubleClickTime() };
-    ((system_timeout_ms as f64) * 0.9).floor() as u32
+    450
 }
 
 fn current_cycle_target(config: &ClickerConfig, sequence_index: usize) -> SequenceTarget {
@@ -347,21 +278,6 @@ pub fn build_config(settings: &ClickerSettings) -> Result<ClickerConfig, String>
         input_type: if is_keyboard { 1 } else { 0 },
         key_code,
         keyboard_uppercase,
-        process_list_enabled: settings.process_list_enabled,
-        process_list_mode: match settings.process_list_mode.as_str() {
-            "blacklist" => crate::engine::ProcessListMode::Blacklist,
-            _ => crate::engine::ProcessListMode::Whitelist,
-        },
-        process_list_entries: settings
-            .process_list_entries
-            .clone()
-            .into_iter()
-            .map(|mut entry| {
-                entry.name = crate::engine::process::normalize_process_name(&entry.name);
-                entry
-            })
-            .collect(),
-        task_switcher_stop_enabled: settings.task_switcher_stop_enabled,
     })
 }
 
@@ -448,6 +364,7 @@ fn plan_cycle_batch(
 // -- Engine loop --
 
 struct ClickerContext {
+    key_token: String,
     is_keyboard: bool,
     down_flag: u32,
     up_flag: u32,
@@ -493,7 +410,14 @@ impl ClickerContext {
         let hold_ms =
             ((config.interval_secs * duty.max(0.0) / 100.0 * 1000.0) as u32).min(cycle_ms);
 
+        let key_token = if is_keyboard {
+            settings_keyboard_key_to_token(config.key_code)
+        } else {
+            String::new()
+        };
+
         Self {
+            key_token,
             is_keyboard,
             down_flag,
             up_flag,
@@ -504,6 +428,20 @@ impl ClickerContext {
             double_plan: ClickCyclePlan::double(hold_ms, cycle_ms, config.double_click_gap_ms),
         }
     }
+}
+
+fn settings_keyboard_key_to_token(vk: u16) -> String {
+    // Reverse-map common letter/digit VKs back to the key token used by the
+    // Linux evdev keyboard layer. For everything else the exact token is
+    // parsed from settings.keyboard_key by build_config, but we only have the
+    // VK here. Try the hotkey parser token for the same VK as a fallback.
+    if (b'A' as u16..=b'Z' as u16).contains(&vk) {
+        return ((vk as u8).to_ascii_lowercase() as char).to_string();
+    }
+    if (b'0' as u16..=b'9' as u16).contains(&vk) {
+        return (vk as u8 as char).to_string();
+    }
+    String::new()
 }
 
 struct LoopState {
@@ -542,46 +480,10 @@ fn check_abort(config: &ClickerConfig, start_time: Instant) -> Option<String> {
     if let Some(reason) = should_stop_for_failsafe(config) {
         return Some(reason);
     }
-    if config.task_switcher_stop_enabled && process::is_task_switcher_active() {
-        return Some(String::from("Blocked by task switcher"));
-    }
-    if config.process_list_enabled
-        && process::check_process_list(config) == Some(super::ProcessListBehavior::Stop)
-    {
-        return Some(String::from("Blocked by process list"));
-    }
     if config.time_limit > 0.0 && start_time.elapsed().as_secs_f64() >= config.time_limit {
         return Some(format!("Time limit reached ({:.1}s)", config.time_limit));
     }
     None
-}
-
-fn handle_process_list_pause(config: &ClickerConfig, control: &RunControl) -> Option<String> {
-    if !config.process_list_enabled {
-        return None;
-    }
-    if process::check_process_list(config) != Some(super::ProcessListBehavior::Pause) {
-        return None;
-    }
-    let state = control.app.state::<ClickerState>();
-    state.paused.store(true, Ordering::SeqCst);
-    emit_status(&control.app);
-    loop {
-        std::thread::sleep(Duration::from_millis(200));
-        if !state.running.load(Ordering::SeqCst)
-            || state.run_generation.load(Ordering::SeqCst) != control.expected_generation
-        {
-            state.paused.store(false, Ordering::SeqCst);
-            emit_status(&control.app);
-            return Some(String::from("Stopped"));
-        }
-        if process::check_process_list(config).is_none() {
-            break;
-        }
-    }
-    state.paused.store(false, Ordering::SeqCst);
-    emit_status(&control.app);
-    Some(String::from("Blocked by process list"))
 }
 
 fn update_target(
@@ -660,8 +562,9 @@ fn run_batch(
 
     if ctx.is_keyboard {
         if batch.double_cycles > 0 {
-            send_key_presses(
+            send_key_presses_cross_platform(
                 config.key_code,
+                &ctx.key_token,
                 batch.double_cycles,
                 config.keyboard_uppercase,
                 ctx.double_plan,
@@ -670,8 +573,9 @@ fn run_batch(
             );
         }
         if batch.single_cycles > 0 {
-            send_key_presses(
+            send_key_presses_cross_platform(
                 config.key_code,
+                &ctx.key_token,
                 batch.single_cycles,
                 config.keyboard_uppercase,
                 ctx.single_plan,
@@ -731,27 +635,9 @@ fn run_batch(
     true
 }
 
-fn cpu_usage(start_cycles: u64, cycle_freq: f64, elapsed_secs: f64) -> f64 {
-    if elapsed_secs < 0.001 {
-        return -1.0;
-    }
-    let end = thread_cycles();
-    let delta = end.saturating_sub(start_cycles);
-    let cpu_secs = delta as f64 / cycle_freq;
-    let pct = (cpu_secs / elapsed_secs) * 100.0;
-    if pct < 0.001 {
-        -1.0
-    } else {
-        pct
-    }
-}
-
 pub fn start_clicker(config: ClickerConfig, control: RunControl) -> RunOutcome {
     CLICK_COUNT.store(0, Ordering::SeqCst);
-    let _timer = TimerResolutionGuard::new();
 
-    let cycle_freq = calibrate_cycle_freq();
-    let cpu_start = thread_cycles();
     let start_time = Instant::now();
     let mut rng = SmallRng::new();
     let ctx = ClickerContext::new(&config);
@@ -775,10 +661,6 @@ pub fn start_clicker(config: ClickerConfig, control: RunControl) -> RunOutcome {
             st.stop_reason = reason;
             break;
         }
-        if let Some(reason) = handle_process_list_pause(&config, &control) {
-            st.stop_reason = reason;
-            break;
-        }
         if config.limit > 0 && st.click_count >= config.limit as i64 {
             st.stop_reason = format!("Click limit reached ({})", config.limit);
             break;
@@ -795,13 +677,12 @@ pub fn start_clicker(config: ClickerConfig, control: RunControl) -> RunOutcome {
     }
 
     let elapsed = start_time.elapsed().as_secs_f64();
-    let avg_cpu = cpu_usage(cpu_start, cycle_freq, elapsed);
 
     RunOutcome {
         stop_reason: st.stop_reason,
         click_count: st.click_count,
         elapsed_secs: elapsed,
-        avg_cpu,
+        avg_cpu: -1.0,
     }
 }
 
@@ -856,11 +737,6 @@ mod tests {
             input_type: 0,
             key_code: 0,
             keyboard_uppercase: false,
-            process_list_enabled: false,
-            process_list_mode: crate::engine::ProcessListMode::Whitelist,
-
-            process_list_entries: Vec::new(),
-            task_switcher_stop_enabled: false,
         }
     }
 
