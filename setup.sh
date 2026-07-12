@@ -1,7 +1,6 @@
 #!/bin/bash
 
 Distro="$(lsb_release -i | cut -f 2-)"
-Cwd="$(pwd)"
 
 echo "Do you want to launch the autoclicker after install? (y/N)"
 read LaunchAfterInstall
